@@ -28,3 +28,6 @@ target/npm-pack/
 # Python tooling and Harbor adapter bytecode
 __pycache__/
 *.py[cod]
+
+# Local spike / scratch artifacts (not for commit)
+.scratch/
