@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"pong"}]}}
+{"type":"result","subtype":"success","result":"pong","is_error":false}

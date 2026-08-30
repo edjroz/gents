@@ -17,7 +17,7 @@ Parent: `docs/design-notes/claude-subscription-spike.md`
 - **Claude write gate:** no `claude` / proxy→Claude / gents-turn-via-proxy without an explicit numbered human approval for that call.
 - **Text-only spike:** no tool bridging; `--tools ""` + reject `tool_use`.
 - **Artifacts:** `.scratch/claude-spike/` (gitignored). Prod homes untouched.
-- **Phase 6 deferred** until Phase 5 Go.
+- **Phase 6 Path A unlocked** by Phase 5 Go: CLI-login + loopback completer; no oat in DefraDB; no new `BackendProviderKind` in v1.
 - **Not a Lean change:** plumbing/integration only.
 
 ## Dependency graph
@@ -90,7 +90,23 @@ Phase 0 toolchain/isolation
 
 ### Checkpoint: Complete (spike decision)
 - [x] `phase5-verdict.md` = **Go**
-- [ ] Phase 6 only if Go (new plan then) — unlocked; not started
+- [x] Phase 6 Path A SPEC drafted (`SPEC-claude-phase6-packaging.md`) — awaiting human review before code
+
+### Phase 6: Path A packaging (docs-first; code after SPEC approval)
+- [x] Task 14: Human review / lock Path A open questions
+- [ ] Task 15: Rust completer lib + fixtures (`claude-completer-lib`)
+- [ ] Task 16: Productize loopback proxy (`claude-loopback-proxy` → `gents claude-proxy`)
+- [ ] Task 17: `gents claude-login` + `claude-auth-probe` (no oat)
+- [ ] Task 18: Operator preset / recipe (init + text-only behavior)
+- [ ] Task 19: `docs/backends.md` + spike status update
+- [ ] Task 20: **GATED** packaging reproduction smoke (write request #4) — only after 15–19
+
+### Checkpoint: Path A packaged
+- [ ] Fixture fail-closed in-tree
+- [ ] Login/probe do not write `OAuthCredential` tokens
+- [ ] Documented OpenAiCompatible → proxy → Claude path works
+- [ ] backends.md row landed
+- [ ] No Lean/schema change
 
 ## Risks and Mitigations
 
@@ -102,11 +118,13 @@ Phase 0 toolchain/isolation
 | Tool bridging mistaken for spike failure | Med | Text-only behavior; strip tools at proxy |
 | Meter UI lag / ambient Claude IDE usage | Med | Correlate timestamps; list every approved write |
 | `gents init` flags drift vs SPEC | Low | Record exact CLI used in spike log |
+| Phase 6 accidentally copies Grok oat-into-DefraDB | High | Path A lock: no `OAuthCredential` upsert; probe CLI seat only |
+| Scope creep into native provider kind / desktop | Med | Deferred to A2; Ask-first boundary in Phase 6 SPEC |
 
 ## Open Questions
 
-- None blocking Phases 0–5 (defaults locked in parent SPEC).
-- Phase 6 packaging path (A/B) only if Phase 5 Go.
+- Phase 6 Path A open questions in `SPEC-claude-phase6-packaging.md` (proxy language, command names, config-dir default, proxy location, defer A2).
+- None remaining for Phases 0–5.
 
 ## Task list target
 

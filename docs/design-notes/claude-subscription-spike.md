@@ -5,9 +5,9 @@ can back gents' **owned completion loop** without a native Anthropic provider
 crate. Companion to `xai-grok-oauth-spike.md` (different seat, same thesis:
 gents owns the loop + documents; the vendor CLI is only a billed completer).
 
-**Status:** Approved phase order + ACs (2026-08-29). Specs below are the
-contract. Implementation is plumbing/integration — **not** a Lean lifecycle
-change.
+**Status:** Phases 0–5 complete; Phase 5 verdict **Go** (2026-08-30). Phase 6
+Path A packaging SPEC drafted for review. Implementation remains
+plumbing/integration — **not** a Lean lifecycle change.
 
 ## Hard operating rule — Claude write gate
 
@@ -43,7 +43,7 @@ Opportunistic “just one quick test” is forbidden.
 | 1 | Phase 3/4 tool surface | **Text-only / no-tools behavior.** Tool bridging is out of spike scope. |
 | 2 | Model slug | Advertise **`claude-plan`**. Proxy may map internally to a Claude `--model` later; client always sees `claude-plan`. |
 | 3 | Artifact root | Worktree-local **`.scratch/claude-spike/`** (gitignored). Prod `~/.gents` / prod Claude home untouched. |
-| 4 | Phase 6 packaging | **Defer** until Phase 5 Go. Prefer path A (CLI-login only, no `OAuthCredential`) if revisited. |
+| 4 | Phase 6 packaging | **Unlocked by Phase 5 Go.** Path A only for v1: CLI-login + loopback completer; **no oat / no `OAuthCredential`**. See `SPEC-claude-phase6-packaging.md`. |
 | 5 | Billing gate placement | **Phase 5** (after gents-shaped traffic exists). Not a Phase 0/1 blocker. |
 | 6 | Provider shape | Stock **`OpenAiCompatible` + `ChatCompletions`** + dummy API key → loopback proxy. No native Anthropic crate in this spike. |
 | 7 | Completer-only enforcement | Claude Code **2.1.x**: `--tools ""` + reject stdout `tool_use`. Do **not** use `--bare` (forces API-key auth). |
@@ -81,7 +81,7 @@ Build order is strict: each phase’s exit criteria unlock the next.
 | [`SPEC-claude-phase3-gents-integration.md`](./SPEC-claude-phase3-gents-integration.md) | 3 |
 | [`SPEC-claude-phase4-document-verify.md`](./SPEC-claude-phase4-document-verify.md) | 4 |
 | [`SPEC-claude-phase5-billing-confirmation.md`](./SPEC-claude-phase5-billing-confirmation.md) | 5 |
-| Phase 6 | Deferred — no SPEC until Phase 5 Go |
+| [`SPEC-claude-phase6-packaging.md`](./SPEC-claude-phase6-packaging.md) | 6 (Path A) |
 
 ## Spike-level success / fail
 
