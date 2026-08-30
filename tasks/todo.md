@@ -241,7 +241,7 @@ proxy request mode=claude; `/v1/models` + `/healthz` healthy. Evidence:
 
 - [x] Models + SSE contract green
 - [x] Live smoke approved and logged
-- [ ] Human OK for gents init
+- [x] Human OK for gents init
 
 ---
 
@@ -252,14 +252,20 @@ at proxy with `OpenAiCompatible` + `chat-completions` + dummy key + `claude-plan
 No agent turn yet.
 
 **Acceptance criteria:**
-- [ ] Home under `.scratch/claude-spike/gents-home` (or documented path)
-- [ ] Prod `~/.gents` untouched
-- [ ] Backend endpoint = loopback proxy `/v1`
-- [ ] Exact CLI command recorded in spike log
+- [x] Home under `.scratch/claude-spike/gents-home` (or documented path)
+- [x] Prod `~/.gents` untouched
+- [x] Backend endpoint = loopback proxy `/v1`
+- [x] Exact CLI command recorded in spike log
 
 **Verification:**
-- [ ] Manual: `gents config backend show` (or GraphQL) against spike home
-- [ ] Manual: confirm prod home mtime unchanged if feasible
+- [x] Manual: init stdout recorded endpoint/provider/model; full `backend show` deferred until spike `gents server` (Task 10)
+- [x] Manual: prod `~/.gents/init.json` still live principal DID / mtime Aug 29
+
+**Done:** `gents init --home .scratch/claude-spike/gents-home ... --tool-package minimal`
+→ status=initialized; agent_did=`did:key:z6MkgCE1AUd8uxQ6oEm3Phh54tftWiG7DfupDAUZpGvrwgu6`;
+endpoint=`http://127.0.0.1:8787/v1`; provider=`OpenAiCompatible`; model=`claude-plan`;
+tool_package=`Minimal` / ceiling=`MetaOnly`. Evidence:
+`.scratch/claude-spike/logs/task9-init.md` (+ `phase3-init.md`).
 
 **Dependencies:** Checkpoint Proxy  
 **Files likely touched:**
