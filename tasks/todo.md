@@ -124,7 +124,7 @@ with fixture JSONL files, without calling Claude.
 
 - [x] Fixture fail-closed works
 - [x] One approved live smoke succeeded (`pong` via #1c)
-- [ ] Human OK to start proxy build
+- [x] Human OK to start proxy build (Task 7 authorized)
 
 ---
 
@@ -186,21 +186,26 @@ strip `tools`/`tool_choice`; never forward Anthropic env; write request log.
 Keep a `PROXY_CANNED=1` or equivalent so default dev mode needs no Claude.
 
 **Acceptance criteria:**
-- [ ] Canned mode default OR explicit `PROXY_USE_CLAUDE=1` required for live path
-- [ ] Live path still requires adapter’s `CLAUDE_WRITE_APPROVED=1`
-- [ ] `tools` / `tool_choice` never enable Claude tools
-- [ ] Request log: timestamp, model, message count, stream flag (no secrets)
+- [x] Canned mode default OR explicit `PROXY_USE_CLAUDE=1` required for live path
+- [x] Live path still requires adapter’s `CLAUDE_WRITE_APPROVED=1`
+- [x] `tools` / `tool_choice` never enable Claude tools
+- [x] Request log: timestamp, model, message count, stream flag (no secrets)
 
 **Verification:**
-- [ ] Manual: canned stream works without Claude
-- [ ] Manual: live path refuses without approval env
+- [x] Manual: canned stream works without Claude
+- [x] Manual: live path refuses without approval env (502)
+- [x] Manual: `SPIKE_FAKE_COMPLETER` path proves wiring + SSE without Claude
 
 **Dependencies:** Tasks 3, 6  
 **Files likely touched:**
-- `.scratch/claude-spike/proxy/**`
-- `.scratch/claude-spike/bin/claude-completer.sh` (if IPC tweaks)
+- `.scratch/claude-spike/proxy/server.py`
+- `.scratch/claude-spike/bin/claude-completer.sh` (stderr-only context)
+- `.scratch/claude-spike/bin/fake-completer.sh`
+- `.scratch/claude-spike/bin/run-proxy.sh`
 
 **Estimated scope:** M
+
+**Done:** double gate (`PROXY_USE_CLAUDE` + `CLAUDE_WRITE_APPROVED`); tools stripped; fake-completer verifies live path. Claude writes this task: 0.
 
 ---
 
