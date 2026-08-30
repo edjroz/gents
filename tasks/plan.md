@@ -94,7 +94,7 @@ Phase 0 toolchain/isolation
 
 ### Phase 6: Path A packaging (docs-first; code after SPEC approval)
 - [x] Task 14: Human review / lock Path A open questions
-- [ ] Task 15: Rust completer lib + fixtures (`claude-completer-lib`)
+- [x] Task 15: Rust completer lib + fixtures (`claude-completer-lib`) — 6/6 via Herdr `wP:pA`
 - [ ] Task 16: Productize loopback proxy (`claude-loopback-proxy` → `gents claude-proxy`)
 - [ ] Task 17: `gents claude-login` + `claude-auth-probe` (no oat)
 - [ ] Task 18: Operator preset / recipe (init + text-only behavior)

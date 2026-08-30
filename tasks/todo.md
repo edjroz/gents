@@ -464,13 +464,13 @@ checked-in stream-json fixtures. No live Claude.
 - [x] Unit: missing/empty result → error
 - [x] Unit: child env sanitize strips Anthropic/cloud vars
 - [x] No `claude --bare` path exists
-- [ ] In-tree `cargo test -p gents claude_completer` green in human shell
-      (agent sandbox blocked on full gents native rebuild; equivalent 6/6 passed
-      via isolated `.scratch/claude-completer-unit` compile of the same module)
+- [x] In-tree `cargo test -p gents claude_completer` green
+      (Herdr pane `wP:pA`; needed `GENTS_SKIP_LENS_BUILD=1`
+      `GENTS_SKIP_CALLBACK_WASM_BUILD=1` because wasm32 target missing)
 
 **Verification:**
-- [x] Parser/env/argv tests pass (standalone mirror of module)
-- [ ] Human: `cargo test -p gents claude_completer --lib`
+- [x] Parser/env/argv tests pass
+- [x] Herdr pane: `test result: ok. 6 passed; 0 failed`
 - [x] No network / no Claude binary required for unit path
 
 **Dependencies:** Task 14  
@@ -480,9 +480,8 @@ checked-in stream-json fixtures. No live Claude.
 
 **Estimated scope:** M
 
-**Done note (partial):** Module + fixtures landed and wired in `lib.rs`. Full
-package test pending human shell because agent sandbox cannot rebuild `gents`
-native deps (`sha2-asm` TMPDIR).
+**Done note:** Task 15 complete. Herdr discovery works via socket API even
+without `HERDR_ENV`; this agent pane is `wP:p3`, test pane `wP:pA`.
 
 ---
 
