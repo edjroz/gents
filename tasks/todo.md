@@ -282,11 +282,18 @@ tool_package=`Minimal` / ceiling=`MetaOnly`. Evidence:
 no tool refs) so Phase 3 cannot confuse “no tool_calls” with failure.
 
 **Acceptance criteria:**
-- [ ] Behavior used for spike has zero tools enabled
-- [ ] Documented how that was achieved (init flags / config commands)
+- [x] Behavior used for spike has zero tools enabled
+- [x] Documented how that was achieved (init flags / config commands)
 
 **Verification:**
-- [ ] Manual: behavior show / GraphQL tool list empty for spike agent
+- [x] Manual: backend/behavior/tools show on spike GraphQL :9192; runtime log `tools=[]`
+
+**Done:** `--tool-package minimal` + server `--tool-ceiling meta-only`, then
+`gents config tools set --enable-context-budget false` (minimal still exposed
+`context_budget`). Runtime rebuilt with `model=claude-plan tools=[]`. Backend
+also confirmed `openai_wire_api=chat_completions`. Evidence:
+`.scratch/claude-spike/logs/task10-text-only.md`. Spike server remains on
+`:9192`/`:9293` for Task 11.
 
 **Dependencies:** Task 9  
 **Files likely touched:**
