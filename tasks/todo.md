@@ -386,14 +386,19 @@ Evidence: `.scratch/claude-spike/logs/phase4-evidence.md` (+ `phase4-raw.json`).
 meter / invoice. Agent prepares checklist only; human records verdict.
 
 **Acceptance criteria:**
-- [ ] Checklist of all approved writes (id, time, purpose)
-- [ ] Human verdict: Go | No-Go | Inconclusive
-- [ ] Written to `.scratch/claude-spike/logs/phase5-verdict.md`
-- [ ] Extra Claude probes only if human approves new write requests
+- [x] Checklist of all approved writes (id, time, purpose)
+- [x] Human verdict: Go | No-Go | Inconclusive
+- [x] Written to `.scratch/claude-spike/logs/phase5-verdict.md`
+- [x] Extra Claude probes only if human approves new write requests
 
 **Verification:**
-- [ ] Manual: human signs verdict
-- [ ] If Inconclusive: listed next approved probe
+- [x] Manual: human signed **Go** (plan/subscription meter, not Console API)
+- [x] N/A Inconclusive probe list
+
+**Done:** Human verdict **Go**. Checklist
+`.scratch/claude-spike/logs/phase5-checklist.md`; verdict
+`.scratch/claude-spike/logs/phase5-verdict.md`. Correlated #1c/#2/#3 (+ #3
+title-gen sibling under same approval). No new Claude write opened for Phase 5.
 
 **Dependencies:** Task 12  
 **Files likely touched:**
@@ -405,7 +410,7 @@ meter / invoice. Agent prepares checklist only; human records verdict.
 
 ## Checkpoint: Spike decision (after Task 13)
 
-- [ ] Verdict filed
+- [x] Verdict filed (**Go**)
 - [ ] If Go → new plan for Phase 6 packaging (do not invent tasks here yet)
-- [ ] If No-Go → stop; keep adapter/proxy as negative evidence
-- [ ] All SPEC phase exits satisfied or explicitly waived by human
+- [x] If No-Go → N/A
+- [x] All SPEC phase exits satisfied or explicitly waived by human

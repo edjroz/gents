@@ -79,18 +79,18 @@ Phase 0 toolchain/isolation
 - [ ] Prod homes untouched
 
 ### Phase 4: Documents
-- [ ] Task 12: Collect AgentRequest / AgentMessage / InferenceCall evidence pack
+- [x] Task 12: Collect AgentRequest / AgentMessage / InferenceCall evidence pack
 
 ### Checkpoint: Documents
-- [ ] `phase4-evidence.md` written
-- [ ] No oat in DefraDB
+- [x] `phase4-evidence.md` written
+- [x] No oat in DefraDB
 
 ### Phase 5: Billing
-- [ ] Task 13: Correlate approved writes vs plan meter → verdict file
+- [x] Task 13: Correlate approved writes vs plan meter → verdict file
 
 ### Checkpoint: Complete (spike decision)
-- [ ] `phase5-verdict.md` = Go | No-Go | Inconclusive
-- [ ] Phase 6 only if Go (new plan then)
+- [x] `phase5-verdict.md` = **Go**
+- [ ] Phase 6 only if Go (new plan then) — unlocked; not started
 
 ## Risks and Mitigations
 
