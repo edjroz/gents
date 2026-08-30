@@ -491,23 +491,28 @@ without `HERDR_ENV`; this agent pane is `wP:p3`, test pane `wP:pA`.
 to completer lib or existing adapter with same SSE/tool-strip/gate behavior.
 
 **Acceptance criteria:**
-- [ ] Loopback-only bind
-- [ ] `GET /v1/models` → `claude-plan`
-- [ ] SSE chat.completions + `[DONE]`
-- [ ] Tools stripped; Anthropic env not forwarded
-- [ ] Canned/fake path works without Claude
-- [ ] Live Claude path still requires write approval env
+- [x] Loopback-only bind
+- [x] `GET /v1/models` → `claude-plan`
+- [x] SSE chat.completions + `[DONE]`
+- [x] Tools stripped; Anthropic env not forwarded
+- [x] Canned/fake path works without Claude
+- [x] Live Claude path still requires write approval env
 
 **Verification:**
-- [ ] Manual/automated: fake-completer SSE smoke
-- [ ] Manual: unapproved live path refuses (502/error)
+- [x] Automated: `cargo test -p gents claude_completer --lib` → 13 passed (helpers + parse)
+- [x] Automated: `cargo test -p gents-cli claude_proxy --lib` → 4 passed (canned SSE, 502 without approval, fake completer)
+- [x] Manual/automated: fake-completer SSE smoke
+- [x] Manual: unapproved live path refuses (502/error)
 
 **Dependencies:** Task 15 (+ Task 14 proxy-language decision)  
 **Files likely touched:**
-- proxy tool/bin location per Task 14
-- docs snippet for run command
+- `crates/gents/src/claude_completer/proxy.rs`
+- `crates/gents-cli/src/commands/claude_proxy.rs`
+- `crates/gents-cli/src/cli/args.rs` / `commands/mod.rs` / `lib.rs`
 
 **Estimated scope:** M
+
+**Done:** Rust `gents claude-proxy` on Herdr wP:pA. Default canned; live needs `PROXY_USE_CLAUDE=1` + `CLAUDE_WRITE_APPROVED=1`. Explicit `--config-dir`. Claude writes: 0.
 
 ---
 

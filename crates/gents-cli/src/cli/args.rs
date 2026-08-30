@@ -84,6 +84,11 @@ pub(crate) enum Command {
         about = "Probe a DefraDB-backed Grok / xAI OAuth credential (read-only)"
     )]
     GrokAuthProbe(GrokAuthProbeArgs),
+    #[command(
+        name = "claude-proxy",
+        about = "Run the experimental Path A loopback OpenAI adapter for Claude Max (no oat in DefraDB)"
+    )]
+    ClaudeProxy(ClaudeProxyArgs),
     #[command(name = "__native-fs-runner", hide = true)]
     NativeFsRunner(NativeFsRunnerArgs),
     #[command(about = "Inspect and control live P2P runtime connectivity", after_help = P2P_AFTER_HELP)]
@@ -509,6 +514,55 @@ pub(crate) struct GrokLoginArgs {
     pub(crate) agent_did: Option<String>,
     #[arg(long, default_value = "xai-oauth")]
     pub(crate) provider: String,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct ClaudeProxyArgs {
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        help = "Bind host (loopback only: 127.0.0.1, localhost, ::1)"
+    )]
+    pub(crate) host: String,
+    #[arg(long, default_value_t = 8787, help = "Bind port")]
+    pub(crate) port: u16,
+    #[arg(
+        long,
+        help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
+    )]
+    pub(crate) config_dir: PathBuf,
+    #[arg(
+        long,
+        help = "Working directory for Claude CLI child processes. Defaults to <config-dir>/../workdir when unset."
+    )]
+    pub(crate) workdir: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Directory for proxy-requests.jsonl. Defaults to <config-dir>/../logs when unset."
+    )]
+    pub(crate) log_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value = "claude-plan",
+        help = "Client-facing model slug advertised by /v1/models"
+    )]
+    pub(crate) model: String,
+    #[arg(
+        long,
+        default_value = "pong",
+        help = "Assistant text returned in canned mode (PROXY_USE_CLAUDE unset)"
+    )]
+    pub(crate) canned_text: String,
+    #[arg(
+        long,
+        help = "Optional fake completer executable for live-wiring tests (prints assistant text on stdout)"
+    )]
+    pub(crate) fake_completer: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
+    )]
+    pub(crate) claude_bin: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]

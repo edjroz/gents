@@ -12,6 +12,8 @@ use std::ffi::{OsStr, OsString};
 use serde_json::Value;
 use thiserror::Error;
 
+pub mod proxy;
+
 /// Environment variable names that must not reach the Claude CLI child.
 ///
 /// These flip the seat onto API-key / cloud-provider billing paths. Keep in
