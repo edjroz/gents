@@ -311,14 +311,20 @@ also confirmed `openai_wire_api=chat_completions`. Evidence:
 completion needs its own approval or an explicit multi-call approval text).
 
 **Acceptance criteria:**
-- [ ] Write request #3 approved before turn
-- [ ] Turn completes with assistant text
-- [ ] Proxy log shows the request
-- [ ] Adapter still saw no `tool_use`
+- [x] Write request #3 approved before turn
+- [x] Turn completes with assistant text
+- [x] Proxy log shows the request
+- [x] Adapter still saw no `tool_use`
 
 **Verification:**
-- [ ] Manual: human meter watch recommended
-- [ ] Manual: correlate gents request id ↔ proxy log ↔ completer log
+- [x] Manual: CLI total_cost_usd=0.032538 recorded; Phase 5 correlates Max meter
+- [x] Manual: request `a4788ac7-…` ↔ proxy 01:42:45/46 ↔ completer `…T014246Z`
+
+**Done:** Herdr pane `wP:p8` ran `gents chat … "Reply with exactly: pong"` → pane
+`pong` / `TASK11_EXIT:0`; spike response content=`pong` status=complete;
+completer `tools=[]` result=pong; proxy `had_tools_fields=false` (2 calls under
+this approved turn: title gen + main). Evidence:
+`.scratch/claude-spike/logs/write-request-3.md`.
 
 **Dependencies:** Tasks 10, 8 + write approval #3  
 **Files likely touched:**
@@ -331,8 +337,8 @@ completion needs its own approval or an explicit multi-call approval text).
 
 ## Checkpoint: Integration (after Tasks 9–11)
 
-- [ ] Owned-loop text turn succeeded
-- [ ] Prod homes untouched
+- [x] Owned-loop text turn succeeded
+- [x] Prod homes untouched
 - [ ] Human OK for document harvest (prefer no new Claude)
 
 ---
