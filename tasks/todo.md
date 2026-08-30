@@ -215,14 +215,19 @@ Keep a `PROXY_CANNED=1` or equivalent so default dev mode needs no Claude.
 **CLAUDE WRITE REQUEST #2.**
 
 **Acceptance criteria:**
-- [ ] Write request #2 approved
-- [ ] SSE completes with assistant text
-- [ ] Proxy + completer logs correlate
-- [ ] `/v1/models` still healthy
+- [x] Write request #2 approved
+- [x] SSE completes with assistant text
+- [x] Proxy + completer logs correlate
+- [x] `/v1/models` still healthy
 
 **Verification:**
-- [ ] Manual: human meter watch optional
-- [ ] Manual: confirm Authorization ignored / no ANTHROPIC key in child
+- [x] Manual: human meter watch optional (CLI total_cost_usd≈0.02883; Phase 5 correlates Max meter)
+- [x] Manual: confirm Authorization ignored / no ANTHROPIC key in child (Bearer unused accepted; mode=claude; tools=[])
+
+**Done:** human two-terminal live smoke 2026-08-30T00:30:29Z — SSE `pong` + `[DONE]`;
+completer `completer-20260830T003029Z.jsonl` (result=pong, tools=[], cost≈0.02883);
+proxy request mode=claude; `/v1/models` + `/healthz` healthy. Evidence:
+`.scratch/claude-spike/logs/write-request-2.md`. Claude writes this task: 1 (#2).
 
 **Dependencies:** Task 7 + write approval #2  
 **Files likely touched:**
@@ -234,8 +239,8 @@ Keep a `PROXY_CANNED=1` or equivalent so default dev mode needs no Claude.
 
 ## Checkpoint: Proxy (after Tasks 5–8)
 
-- [ ] Models + SSE contract green
-- [ ] Live smoke approved and logged
+- [x] Models + SSE contract green
+- [x] Live smoke approved and logged
 - [ ] Human OK for gents init
 
 ---
