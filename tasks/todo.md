@@ -102,14 +102,14 @@ with fixture JSONL files, without calling Claude.
 `Reply with exactly: pong`. Requires **CLAUDE WRITE REQUEST #1**.
 
 **Acceptance criteria:**
-- [ ] Write request #1 approved by human before run
-- [ ] Assistant text contains `pong` (or exact agreed output)
-- [ ] No `tool_use` in JSONL log
-- [ ] Log stored under `.scratch/claude-spike/logs/completer-*.jsonl`
+- [x] Write request #1/#1b/#1c approved by human before run
+- [x] Assistant text contains `pong` (human terminal + log)
+- [x] No `tool_use` content blocks in JSONL log (`tools: []` on init)
+- [x] Log stored under `.scratch/claude-spike/logs/completer-*.jsonl`
 
 **Verification:**
-- [ ] Manual: human watches Claude usage UI if desired
-- [ ] Manual: inspect log for tool_use absence
+- [x] #1b: auth failure / `$0` under agent sandbox (keychain invisible)
+- [x] #1c: human interactive shell with keychain → printed `pong`
 
 **Dependencies:** Task 3 + human write approval #1  
 **Files likely touched:**
@@ -117,12 +117,13 @@ with fixture JSONL files, without calling Claude.
 
 **Estimated scope:** S (execution), gated
 
+**Status (2026-08-30):** #1 never reached Claude (env `-u` order). #1b auth-failed in agent sandbox (`total_cost_usd=0`). #2-login completed by human (`claude.ai` / Max). **#1c succeeded in human terminal: `pong`.** Log: `completer-20260830T001534Z.jsonl`. Note: live Claude execs that need keychain must run in a human-interactive shell until agent keychain access exists.
 ---
 
 ## Checkpoint: Completer (after Tasks 3–4)
 
 - [x] Fixture fail-closed works
-- [ ] One approved live smoke succeeded
+- [x] One approved live smoke succeeded (`pong` via #1c)
 - [ ] Human OK to start proxy build
 
 ---
@@ -134,19 +135,22 @@ with fixture JSONL files, without calling Claude.
 canned text or 501 for completion until Task 7).
 
 **Acceptance criteria:**
-- [ ] Listens on `127.0.0.1` only
-- [ ] `GET /v1/models` returns `claude-plan`
-- [ ] Process starts/stops via documented command
-- [ ] No completer invocation from this task
+- [x] Listens on `127.0.0.1` only
+- [x] `GET /v1/models` returns `claude-plan`
+- [x] Process starts/stops via documented command (`bin/run-proxy.sh` / `proxy/server.py`)
+- [x] No completer invocation from this task
 
 **Verification:**
-- [ ] Manual: `curl -s http://127.0.0.1:$PORT/v1/models | jq`
+- [x] Manual: curl `/healthz`, `/v1/models`, non-stream + stream completions
 
 **Dependencies:** Checkpoint Completer (or Task 3 if parallelizing carefully)  
 **Files likely touched:**
-- `.scratch/claude-spike/proxy/**`
+- `.scratch/claude-spike/proxy/server.py`
+- `.scratch/claude-spike/bin/run-proxy.sh`
 
 **Estimated scope:** M
+
+**Done:** canned proxy on `127.0.0.1:8787`; `PROXY_USE_CLAUDE=1` returns 501 until Task 7. Claude writes: 0.
 
 ---
 
@@ -156,20 +160,22 @@ canned text or 501 for completion until Task 7).
 from canned tokens (no Claude) so rig/curl framing can be validated offline.
 
 **Acceptance criteria:**
-- [ ] `POST /v1/chat/completions` with `"stream": true` yields `data: chat.completion.chunk` lines + `data: [DONE]`
-- [ ] Tolerates `stream_options.include_usage`
-- [ ] Non-stream JSON path works for curl smoke
-- [ ] Still no Claude call in canned mode
+- [x] `POST /v1/chat/completions` with `"stream": true` yields `data: chat.completion.chunk` lines + `data: [DONE]`
+- [x] Tolerates `stream_options.include_usage`
+- [x] Non-stream JSON path works for curl smoke
+- [x] Still no Claude call in canned mode
 
 **Verification:**
-- [ ] Manual: curl SSE and confirm `[DONE]`
-- [ ] Optional: minimal script asserts chunk shape
+- [x] Manual: curl SSE and confirm `[DONE]`
+- [x] Request log records stream + tools-stripped flags
 
 **Dependencies:** Task 5  
 **Files likely touched:**
-- `.scratch/claude-spike/proxy/**`
+- `.scratch/claude-spike/proxy/server.py`
 
 **Estimated scope:** M
+
+**Done:** canned SSE verified; tools fields ignored (`had_tools_fields=true` still returns text). Claude writes: 0.
 
 ---
 
