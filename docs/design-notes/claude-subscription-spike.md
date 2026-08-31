@@ -85,6 +85,7 @@ Build order is strict: each phase’s exit criteria unlock the next.
 | [`SPEC-claude-phase4-document-verify.md`](./SPEC-claude-phase4-document-verify.md) | 4 |
 | [`SPEC-claude-phase5-billing-confirmation.md`](./SPEC-claude-phase5-billing-confirmation.md) | 5 |
 | [`SPEC-claude-phase6-packaging.md`](./SPEC-claude-phase6-packaging.md) | 6 (Path A) |
+| [`SPEC-claude-a2a-unified-suite.md`](./SPEC-claude-a2a-unified-suite.md) | A2a (approved next) |
 
 ## Spike-level success / fail
 

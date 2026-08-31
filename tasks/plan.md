@@ -102,7 +102,19 @@ Phase 0 toolchain/isolation
 - [x] Task 20: **GATED** packaging reproduction smoke (write request #4) — evidence in `task20-packaging-evidence.md`
 - [x] Post-packaging: **GATED** Codex shim → Claude Path A smoke (write request #5) — evidence in `write5-codex-evidence.md`
 
-Path A packaging smoke complete under write #4. Codex text-only smoke complete under write #5 (`pong` via `:9293` shim). Next: human merge/review decision and later tool/A2 refinement; A2 remains deferred.
+Path A packaging smoke complete under write #4. Codex text-only smoke complete under write #5 (`pong` via `:9293` shim). Multi-model Claude catalog + `--model` forwarding landed (full IDs; default `claude-sonnet-5`).
+
+## Next: A2a unified prod suite (approved 2026-08-31)
+
+SPEC: `docs/design-notes/SPEC-claude-a2a-unified-suite.md`  
+Local handoff (not in git): `.scratch/claude-spike/handoff/claude-a2a-handoff.md`
+
+Locked:
+- Unify into prod `~/.gents`
+- Fast fold = managed child proxy under `gents server`
+- Success bar = one command + `/model` shows Grok + Claude
+- In-process completer = A2b (later)
+- Claude remains text-only / oat-free in A2a
 
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree

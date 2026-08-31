@@ -669,3 +669,25 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 **Estimated scope:** S (execution), gated
 
 **Status:** DONE. Write #5 approved; `gents codex --remote ws://127.0.0.1:9293/ --no-alt-screen "Reply with exactly: pong"` returned `pong` (`request_id=0c978846-…`, session `76144f4d-…`). GraphQL: `OAuthCredential=0`, `AgentToolCall=0`, OpenAiCompatible/`claude-plan` InferenceCalls completed. Proxy: live `mode=claude`, `had_tools_fields=false`. Cleanup overshoot created one extra text turn (`a133b12c-…`) that correctly reported no tools; documented in evidence. Evidence: `.scratch/claude-spike/logs/write5-codex-evidence.md` (+ `write5-raw.json`, `write-request-5.md`).
+
+---
+
+## A2a unified prod suite (approved 2026-08-31)
+
+**SPEC:** `docs/design-notes/SPEC-claude-a2a-unified-suite.md`  
+**Local handoff (not in git):** `.scratch/claude-spike/handoff/claude-a2a-handoff.md`
+
+**Success bar:** `gents server` (+ Codex) on prod; `/model` shows Grok + Claude full IDs; no manual `claude-proxy` process.
+
+### Difference reminder
+- **A2a managed proxy:** server spawns/supervises existing `gents claude-proxy` child (fast).
+- **A2b in-process:** server calls Claude completer directly, no HTTP child (later).
+
+- [ ] **A2a-0** Commit/stabilize Path A model catalog leftovers (full IDs + `--model` forwarding + docs)
+- [ ] **A2a-1** Register Claude OpenAiCompatible backend on prod `~/.gents` beside Grok; prove `:9292` `/model` lists both
+- [ ] **A2a-2** `gents server` manages Claude proxy lifecycle (`--claude-proxy`, required `--claude-config-dir`, healthz, clean shutdown)
+- [ ] **A2a-3** Docs/recipe for unified prod suite; mark spike home historical once green
+- [ ] **A2a-4** **GATED** live verification (Claude write approval): Claude text pong + Grok turn + oat=0 + tools stripped
+
+**Not doing in A2a:** in-process completer, BackendProviderKind/schema/Lean, Claude tool bridging, oat storage, cross-home federation, desktop UI.
+
