@@ -683,9 +683,12 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - **A2a managed proxy:** server spawns/supervises existing `gents claude-proxy` child (fast).
 - **A2b in-process:** server calls Claude completer directly, no HTTP child (later).
 
-- [ ] **A2a-0** Commit/stabilize Path A model catalog leftovers (full IDs + `--model` forwarding + docs)
-- [ ] **A2a-1** Register Claude OpenAiCompatible backend on prod `~/.gents` beside Grok; prove `:9292` `/model` lists both
+- [x] **A2a-0** Commit/stabilize Path A model catalog leftovers (full IDs + `--model` forwarding + docs) — `6dd89732`
+- [x] **A2a-1** Register Claude OpenAiCompatible backend on prod `~/.gents` beside Grok — catalog write done; `/model` re-prove after A2a-2 re-lands
 - [ ] **A2a-2** `gents server` manages Claude proxy lifecycle (`--claude-proxy`, required `--claude-config-dir`, healthz, clean shutdown)
+  - Landed in `36444a55`, then **reverted** (`ba09f0e0`) because `gents server --claude-proxy` hung.
+  - Work is kept. Next agent: review `36444a55` using `.scratch/claude-spike/handoff/A2a-2-review.md`. Suspected: healthz before `tokio::spawn(serve)`.
+  - Do not drop the commit. Do not re-land the inverted startup order.
 - [ ] **A2a-3** Docs/recipe for unified prod suite; mark spike home historical once green
 - [ ] **A2a-4** **GATED** live verification (Claude write approval): Claude text pong + Grok turn + oat=0 + tools stripped
 

@@ -116,6 +116,13 @@ Locked:
 - In-process completer = A2b (later)
 - Claude remains text-only / oat-free in A2a
 
+### Checkpoint: A2a-2 reverted for review (2026-08-31 evening)
+
+- A2a-0/A2a-1 still done (model catalog + prod Claude backend registered)
+- A2a-2 code kept at `36444a55`, reverted on HEAD so the server can boot
+- Review brief (local): `.scratch/claude-spike/handoff/A2a-2-review.md`
+- Boot without `--claude-proxy` until a fixed re-land
+
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree
 - [x] Login/probe do not write `OAuthCredential` tokens
