@@ -26,7 +26,6 @@ use gents::claude_completer::proxy::{
 use gents::claude_completer::{completer_argv, sanitize_child_env};
 use serde_json::{json, Value};
 use tokio::process::Command;
-use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::cli::args::ClaudeProxyArgs;
@@ -44,117 +43,26 @@ struct ProxyState {
     log_dir: PathBuf,
 }
 
-/// Shared launch config for standalone `gents claude-proxy` and server-managed A2a.
-#[derive(Debug, Clone)]
-pub(crate) struct ClaudeProxyConfig {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) config_dir: PathBuf,
-    pub(crate) workdir: Option<PathBuf>,
-    pub(crate) log_dir: Option<PathBuf>,
-    pub(crate) model: String,
-    pub(crate) canned_text: String,
-    pub(crate) fake_completer: Option<PathBuf>,
-    pub(crate) claude_bin: Option<PathBuf>,
-}
-
-impl ClaudeProxyConfig {
-    pub(crate) fn from_args(args: ClaudeProxyArgs) -> Self {
-        Self {
-            host: args.host,
-            port: args.port,
-            config_dir: args.config_dir,
-            workdir: args.workdir,
-            log_dir: args.log_dir,
-            model: args.model,
-            canned_text: args.canned_text,
-            fake_completer: args.fake_completer,
-            claude_bin: args.claude_bin,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ClaudeProxyListenInfo {
-    pub(crate) bind: SocketAddr,
-    pub(crate) endpoint: String,
-    pub(crate) config_dir: PathBuf,
-    pub(crate) workdir: PathBuf,
-    pub(crate) log_dir: PathBuf,
-    pub(crate) model: String,
-    pub(crate) mode: String,
-    pub(crate) use_claude: bool,
-    pub(crate) write_approved: bool,
-    pub(crate) fake_completer: bool,
-}
-
-impl ClaudeProxyListenInfo {
-    pub(crate) fn to_json(&self) -> Value {
-        json!({
-            "status": "listening",
-            "bind": self.bind.to_string(),
-            "endpoint": self.endpoint,
-            "config_dir": self.config_dir,
-            "workdir": self.workdir,
-            "log_dir": self.log_dir,
-            "model": self.model,
-            "models": PATH_A_MODEL_IDS,
-            "mode": self.mode,
-            "use_claude": self.use_claude,
-            "write_approved": self.write_approved,
-            "fake_completer": self.fake_completer,
-        })
-    }
-}
-
 pub(crate) async fn claude_proxy(args: ClaudeProxyArgs) -> Result<()> {
-    let config = ClaudeProxyConfig::from_args(args);
-    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (info, serve) = bind_claude_proxy(config, shutdown_rx).await?;
-    eprintln!(
-        "claude-proxy listening on http://{} mode={} model={} write_approved={} config_dir={}",
-        info.bind,
-        info.mode,
-        info.model,
-        info.write_approved,
-        info.config_dir.display()
-    );
-    serve.await
-}
-
-/// Bind the Path A Claude proxy and return a future that serves until `shutdown` flips true.
-pub(crate) async fn bind_claude_proxy(
-    config: ClaudeProxyConfig,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<(
-    ClaudeProxyListenInfo,
-    impl std::future::Future<Output = Result<()>>,
-)> {
-    if !is_loopback_host(&config.host) {
+    if !is_loopback_host(&args.host) {
         bail!(
             "refusing non-loopback host `{}` (allowed: 127.0.0.1, localhost, ::1)",
-            config.host
+            args.host
         );
+    }
+    if !args.config_dir.as_os_str().is_empty() {
+        // required by clap; keep explicitness in help text
     }
 
-    let config_dir = config
-        .config_dir
-        .canonicalize()
-        .unwrap_or(config.config_dir);
-    if !config_dir.is_dir() {
-        bail!(
-            "claude-proxy --config-dir {} is not a directory",
-            config_dir.display()
-        );
-    }
+    let config_dir = args.config_dir.canonicalize().unwrap_or(args.config_dir);
     let parent = config_dir
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let workdir = config
+    let workdir = args
         .workdir
         .unwrap_or_else(|| parent.join("workdir"));
-    let log_dir = config.log_dir.unwrap_or_else(|| parent.join("logs"));
+    let log_dir = args.log_dir.unwrap_or_else(|| parent.join("logs"));
     std::fs::create_dir_all(&workdir)
         .with_context(|| format!("create workdir {}", workdir.display()))?;
     std::fs::create_dir_all(&log_dir)
@@ -162,25 +70,25 @@ pub(crate) async fn bind_claude_proxy(
 
     let use_claude = std::env::var("PROXY_USE_CLAUDE").ok().as_deref() == Some("1");
     let write_approved = std::env::var("CLAUDE_WRITE_APPROVED").ok().as_deref() == Some("1");
-    let fake = config.fake_completer.is_some();
+    let fake = args.fake_completer.is_some();
     let mode = resolve_mode(use_claude, fake);
 
-    let model = if config.model.trim().is_empty() {
+    let model = if args.model.trim().is_empty() {
         DEFAULT_MODEL_ID.to_string()
     } else {
-        config.model
+        args.model
     };
     let state = Arc::new(ProxyState {
         model: model.clone(),
-        canned_text: config.canned_text,
+        canned_text: args.canned_text,
         use_claude,
         write_approved,
-        fake_completer: config.fake_completer.clone(),
-        claude_bin: config
+        fake_completer: args.fake_completer,
+        claude_bin: args
             .claude_bin
             .unwrap_or_else(|| PathBuf::from("claude")),
         config_dir: config_dir.clone(),
-        workdir: workdir.clone(),
+        workdir,
         log_dir: log_dir.clone(),
     });
 
@@ -193,27 +101,14 @@ pub(crate) async fn bind_claude_proxy(
         .route("/chat/completions", post(chat_completions))
         .with_state(state);
 
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port)
+    let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
-        .with_context(|| format!("parse bind address {}:{}", config.host, config.port))?;
+        .with_context(|| format!("parse bind address {}:{}", args.host, args.port))?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
-    let bound = listener.local_addr().context("reading bound address")?;
-    let info = ClaudeProxyListenInfo {
-        bind: bound,
-        endpoint: format!("http://{bound}/v1"),
-        config_dir: config_dir.clone(),
-        workdir: workdir.clone(),
-        log_dir: log_dir.clone(),
-        model: model.clone(),
-        mode: mode.as_str().to_string(),
-        use_claude,
-        write_approved,
-        fake_completer: fake,
-    };
     info!(
-        %bound,
+        %addr,
         mode = mode.as_str(),
         model = %model,
         write_approved,
@@ -221,56 +116,19 @@ pub(crate) async fn bind_claude_proxy(
         log_dir = %log_dir.display(),
         "claude-proxy listening"
     );
+    eprintln!(
+        "claude-proxy listening on http://{} mode={} model={} write_approved={} config_dir={}",
+        addr,
+        mode.as_str(),
+        model,
+        write_approved,
+        config_dir.display()
+    );
 
-    let serve = async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                if *shutdown.borrow() {
-                    return;
-                }
-                while shutdown.changed().await.is_ok() {
-                    if *shutdown.borrow() {
-                        return;
-                    }
-                }
-            })
-            .await
-            .context("claude-proxy server error")?;
-        Ok(())
-    };
-    Ok((info, serve))
-}
-
-pub(crate) async fn wait_for_claude_proxy_healthz(bind: SocketAddr) -> Result<()> {
-    let url = format!("http://{bind}/healthz");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(std::time::Duration::from_millis(250))
-        .timeout(std::time::Duration::from_millis(500))
-        .build()
-        .context("building Claude proxy readiness client")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut last_error = String::new();
-    loop {
-        match client.get(&url).send().await {
-            Ok(response) if response.status().is_success() => return Ok(()),
-            Ok(response) => {
-                last_error = format!("status {}", response.status());
-            }
-            Err(error) => {
-                last_error = error.to_string();
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            let detail = if last_error.is_empty() {
-                "not attempted"
-            } else {
-                last_error.as_str()
-            };
-            bail!("Claude proxy did not become ready at {url} within 5 seconds: {detail}");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    axum::serve(listener, app)
+        .await
+        .context("claude-proxy server error")?;
+    Ok(())
 }
 
 async fn health(State(state): State<Arc<ProxyState>>) -> Json<Value> {

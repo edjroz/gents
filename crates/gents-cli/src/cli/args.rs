@@ -904,55 +904,6 @@ pub(crate) struct ServeArgs {
     pub(crate) no_codex_shim: bool,
     #[arg(
         long,
-        default_value_t = false,
-        help = "Start Path A Claude Max proxy inside this server process (A2a). Requires --claude-config-dir. Live Claude still needs PROXY_USE_CLAUDE=1 and CLAUDE_WRITE_APPROVED=1."
-    )]
-    pub(crate) claude_proxy: bool,
-    #[arg(
-        long,
-        default_value = "127.0.0.1",
-        help = "Host for the managed Claude proxy (loopback only)"
-    )]
-    pub(crate) claude_proxy_host: String,
-    #[arg(
-        long,
-        default_value_t = 8787,
-        help = "Port for the managed Claude proxy"
-    )]
-    pub(crate) claude_proxy_port: u16,
-    #[arg(
-        long,
-        help = "Required when --claude-proxy is set: Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
-    )]
-    pub(crate) claude_config_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        help = "Working directory for managed Claude CLI child processes. Defaults beside --claude-config-dir when unset."
-    )]
-    pub(crate) claude_workdir: Option<PathBuf>,
-    #[arg(
-        long,
-        help = "Log directory for managed Claude proxy-requests.jsonl. Defaults beside --claude-config-dir when unset."
-    )]
-    pub(crate) claude_log_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value = "claude-sonnet-5",
-        help = "Default model advertised by the managed Claude proxy when requests omit model"
-    )]
-    pub(crate) claude_model: String,
-    #[arg(
-        long,
-        help = "Optional Claude CLI binary for the managed proxy. Defaults to `claude` on PATH"
-    )]
-    pub(crate) claude_bin: Option<PathBuf>,
-    #[arg(
-        long,
-        help = "Optional fake completer for managed-proxy wiring tests"
-    )]
-    pub(crate) claude_fake_completer: Option<PathBuf>,
-    #[arg(
-        long,
         default_value = "127.0.0.1",
         help = "Address for the app-server shim to listen on; non-loopback addresses require --codex-shim-auth-token-env"
     )]

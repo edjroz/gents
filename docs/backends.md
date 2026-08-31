@@ -333,37 +333,3 @@ Seat truth lives only in Claude CLI config under `--config-dir`.
 `gents claude-login` / `claude-auth-probe` report status and explicitly set
 `oauth_credential_written=false`. There is no Claude refresh writer in gents for
 Path A.
-
-### Unified prod suite (A2a managed proxy)
-
-Once Path A works, fold Claude into the **prod** home so Codex `/model` lists
-Grok **and** Claude together:
-
-1. Register an `OpenAiCompatible` Claude backend on prod `~/.gents` pointing at
-   `http://127.0.0.1:8787/v1` with the four full Claude model IDs. Keep the
-   existing Grok/`XaiGrokOAuth` backend. Do **not** create a Claude
-   `OAuthCredential`.
-2. Start Claude from `gents server` instead of a third process:
-
-   ```sh
-   # canned / wiring (no Claude spend)
-   gents server \
-     --claude-proxy \
-     --claude-config-dir "$CLAUDE_CONFIG_DIR"
-
-   # live Claude (requires numbered write approval)
-   PROXY_USE_CLAUDE=1 CLAUDE_WRITE_APPROVED=1 gents server \
-     --claude-proxy \
-     --claude-config-dir "$CLAUDE_CONFIG_DIR"
-   ```
-
-3. Chat with one surface:
-
-   ```sh
-   gents codex --remote ws://127.0.0.1:9292/
-   ```
-
-`/model` should show Grok models and the Claude Max IDs. Claude remains
-text-only under Path A. Standalone `gents claude-proxy` remains available for
-debugging; A2a runs the same adapter **inside** the server process and shuts it
-down with the server.

@@ -116,13 +116,6 @@ Locked:
 - In-process completer = A2b (later)
 - Claude remains text-only / oat-free in A2a
 
-### Checkpoint: A2a-1/A2a-2 landed (2026-08-31)
-
-- Prod Claude backend registered beside Grok (`...:claude-backend`)
-- `gents server --claude-proxy --claude-config-dir ...` manages Path A adapter in-process
-- Focused tests: managed proxy validation/bind + existing claude_proxy suite green
-- Remaining: A2a-3 docs polish (backends recipe started), A2a-4 gated live smoke
-
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree
 - [x] Login/probe do not write `OAuthCredential` tokens

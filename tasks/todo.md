@@ -683,10 +683,10 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - **A2a managed proxy:** server spawns/supervises existing `gents claude-proxy` child (fast).
 - **A2b in-process:** server calls Claude completer directly, no HTTP child (later).
 
-- [x] **A2a-0** Commit/stabilize Path A model catalog leftovers (full IDs + `--model` forwarding + docs)
-- [x] **A2a-1** Register Claude OpenAiCompatible backend on prod `~/.gents` beside Grok; prove `:9292` `/model` lists both
-- [x] **A2a-2** `gents server` manages Claude proxy lifecycle (`--claude-proxy`, required `--claude-config-dir`, healthz, clean shutdown)
-- [x] **A2a-3** Docs/recipe for unified prod suite; mark spike home historical once green
+- [ ] **A2a-0** Commit/stabilize Path A model catalog leftovers (full IDs + `--model` forwarding + docs)
+- [ ] **A2a-1** Register Claude OpenAiCompatible backend on prod `~/.gents` beside Grok; prove `:9292` `/model` lists both
+- [ ] **A2a-2** `gents server` manages Claude proxy lifecycle (`--claude-proxy`, required `--claude-config-dir`, healthz, clean shutdown)
+- [ ] **A2a-3** Docs/recipe for unified prod suite; mark spike home historical once green
 - [ ] **A2a-4** **GATED** live verification (Claude write approval): Claude text pong + Grok turn + oat=0 + tools stripped
 
 **Not doing in A2a:** in-process completer, BackendProviderKind/schema/Lean, Claude tool bridging, oat storage, cross-home federation, desktop UI.
