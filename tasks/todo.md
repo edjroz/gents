@@ -641,3 +641,31 @@ probe → proxy → gents text turn → confirm documents + no oat. Requires
 - [x] SPEC success criteria checked
 - [x] A2 explicitly still deferred
 - [ ] Ready for human merge/review decision (separate from this spike gate)
+
+---
+
+## Post-packaging: GATED — Codex shim → Claude Path A smoke
+
+**Description:** Prove the personal goal path one step further: launch
+`gents codex` against the spike Codex shim and complete a text-only turn on the
+Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
+
+**Acceptance criteria:**
+- [x] Write request #5 approved before live Claude
+- [x] Codex UI / owned-loop assistant text completes (`pong`)
+- [x] Traffic path is shim `:9293` → OpenAiCompatible → Rust `claude-proxy` → Claude seat
+- [x] `OAuthCredential` still 0
+- [x] `AgentToolCall` = 0 / tools disabled
+- [x] Evidence note under `.scratch/claude-spike/logs/`
+
+**Verification:**
+- [x] Manual: correlate Codex pane, proxy-requests.jsonl, and GraphQL harvest
+- [x] Abort on `tool_use` or unexpected auth/API-key path
+
+**Dependencies:** Task 20 + human write approval #5  
+**Files likely touched:**
+- logs / todo / plan only
+
+**Estimated scope:** S (execution), gated
+
+**Status:** DONE. Write #5 approved; `gents codex --remote ws://127.0.0.1:9293/ --no-alt-screen "Reply with exactly: pong"` returned `pong` (`request_id=0c978846-…`, session `76144f4d-…`). GraphQL: `OAuthCredential=0`, `AgentToolCall=0`, OpenAiCompatible/`claude-plan` InferenceCalls completed. Proxy: live `mode=claude`, `had_tools_fields=false`. Cleanup overshoot created one extra text turn (`a133b12c-…`) that correctly reported no tools; documented in evidence. Evidence: `.scratch/claude-spike/logs/write5-codex-evidence.md` (+ `write5-raw.json`, `write-request-5.md`).

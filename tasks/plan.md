@@ -100,8 +100,9 @@ Phase 0 toolchain/isolation
 - [x] Task 18: Operator preset / recipe (init + text-only behavior) — **Track B DONE** (SPEC recipe finalized vs verified flags)
 - [x] Task 19: `docs/backends.md` + spike status update — **Track B DONE**
 - [x] Task 20: **GATED** packaging reproduction smoke (write request #4) — evidence in `task20-packaging-evidence.md`
+- [x] Post-packaging: **GATED** Codex shim → Claude Path A smoke (write request #5) — evidence in `write5-codex-evidence.md`
 
-Path A packaging smoke complete under write #4. Next: human merge/review decision; A2 remains deferred.
+Path A packaging smoke complete under write #4. Codex text-only smoke complete under write #5 (`pong` via `:9293` shim). Next: human merge/review decision and later tool/A2 refinement; A2 remains deferred.
 
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree
@@ -109,6 +110,7 @@ Path A packaging smoke complete under write #4. Next: human merge/review decisio
 - [x] Documented OpenAiCompatible → proxy → Claude path works
 - [x] backends.md row landed
 - [x] No Lean/schema change
+- [x] Codex shim text-only turn against Claude Path A works (`gents codex --remote ws://127.0.0.1:9293/`)
 
 ## Risks and Mitigations
 
