@@ -116,12 +116,13 @@ Locked:
 - In-process completer = A2b (later)
 - Claude remains text-only / oat-free in A2a
 
-### Checkpoint: A2a-2 reverted for review (2026-08-31 evening)
+### Checkpoint: A2a-2 hang fix re-landed
 
-- A2a-0/A2a-1 still done (model catalog + prod Claude backend registered)
-- A2a-2 code kept at `36444a55`, reverted on HEAD so the server can boot
-- Review brief (local): `.scratch/claude-spike/handoff/A2a-2-review.md`
-- Boot without `--claude-proxy` until a fixed re-land
+- Kept `36444a55` in history; hang was healthz-before-spawn
+- `start_managed_claude_proxy` now spawns accept loop then healthz; fail-path joins time-bounded
+- Focused tests green: managed_claude_proxy_* (3), start_managed_spawns_before_healthz, claude_proxy:: (5), server_parses_claude_proxy_flags
+- Remaining: A2a-4 gated live smoke (Claude write approval)
+
 
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree

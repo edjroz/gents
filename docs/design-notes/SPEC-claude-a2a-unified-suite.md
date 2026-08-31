@@ -123,6 +123,14 @@ models:
 - Startup health check against proxy `/healthz`
 - Keep standalone proxy command
 
+**Implementation note (landed, hang fixed):** A2a-2 runs the existing Path A
+adapter **in-process** under `gents server` (`--claude-proxy`, required
+`--claude-config-dir`, healthz, graceful shutdown). Startup order is
+`tokio::spawn(serve)` **then** `/healthz` via `start_managed_claude_proxy`
+(healthz-before-spawn hung in `36444a55`). Fail-path joins are time-bounded.
+Standalone `gents claude-proxy` remains for debug. This is not A2b — Claude
+still speaks OpenAI Chat Completions over loopback HTTP.
+
 ### A2a-3 Docs / recipe
 
 - Update `docs/backends.md` unified-suite section
