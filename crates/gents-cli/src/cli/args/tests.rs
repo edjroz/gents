@@ -781,6 +781,56 @@ fn demo_init_parses_pack_and_home() {
 }
 
 #[test]
+fn claude_login_and_auth_probe_parse_and_require_config_dir() {
+    let login = Cli::try_parse_from([
+        "gents",
+        "claude-login",
+        "--config-dir",
+        "/tmp/claude-cfg",
+        "--dry-run",
+        "--email",
+        "user@example.com",
+    ])
+    .expect("claude-login should parse");
+    match login.command {
+        Command::ClaudeLogin(args) => {
+            assert_eq!(args.config_dir, PathBuf::from("/tmp/claude-cfg"));
+            assert!(args.dry_run);
+            assert_eq!(args.email.as_deref(), Some("user@example.com"));
+            assert!(!args.console);
+            assert!(!args.sso);
+        }
+        _ => panic!("expected ClaudeLogin"),
+    }
+
+    let probe = Cli::try_parse_from([
+        "gents",
+        "claude-auth-probe",
+        "--config-dir",
+        "/tmp/claude-cfg",
+        "--claude-bin",
+        "/usr/bin/claude",
+    ])
+    .expect("claude-auth-probe should parse");
+    match probe.command {
+        Command::ClaudeAuthProbe(args) => {
+            assert_eq!(args.config_dir, PathBuf::from("/tmp/claude-cfg"));
+            assert_eq!(args.claude_bin, Some(PathBuf::from("/usr/bin/claude")));
+        }
+        _ => panic!("expected ClaudeAuthProbe"),
+    }
+
+    assert!(
+        Cli::try_parse_from(["gents", "claude-login"]).is_err(),
+        "claude-login must require --config-dir"
+    );
+    assert!(
+        Cli::try_parse_from(["gents", "claude-auth-probe"]).is_err(),
+        "claude-auth-probe must require --config-dir"
+    );
+}
+
+#[test]
 fn every_deprecated_path_warns() {
     use crate::cli::deprecations::{deprecation_warning, DEPRECATED};
 

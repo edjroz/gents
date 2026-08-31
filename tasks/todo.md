@@ -516,84 +516,95 @@ to completer lib or existing adapter with same SSE/tool-strip/gate behavior.
 
 ---
 
-## Task 17: `claude-login` + `claude-auth-probe`
+## Task 17: `claude-login` + `claude-auth-probe` — Track A
 
 **Description:** Add CLI commands that wrap official Claude login/status. Must
 **not** upsert Anthropic tokens into `OAuthCredential`.
 
 **Acceptance criteria:**
-- [ ] `gents claude-login` invokes official CLI login flow (gated if network)
-- [ ] `gents claude-auth-probe` reports logged-in / authMethod / subscriptionType / config-dir
-- [ ] GraphQL/`OAuthCredential` writes for Claude tokens = 0
-- [ ] Help text warns seat lives in Claude config, not DefraDB
+- [x] `gents claude-login` invokes official CLI login flow (gated if network)
+- [x] `gents claude-auth-probe` reports logged-in / authMethod / subscriptionType / config-dir
+- [x] GraphQL/`OAuthCredential` writes for Claude tokens = 0
+- [x] Help text warns seat lives in Claude config, not DefraDB
 
 **Verification:**
-- [ ] Unit: arg/help tests
-- [ ] Manual probe against spike `CLAUDE_CONFIG_DIR` (read-only; no write gate if no network)
-- [ ] Login itself only after write-gate if it hits Anthropic
+- [x] Unit: arg/help tests (`claude_` module tests + clap parse test) — 12 passed
+- [x] Manual probe against spike `CLAUDE_CONFIG_DIR` (read-only): `logged_in=true`, `auth_method=claude.ai`, `subscription_type=max`, `api_key_source=none`, `oauth_credential_written=false`
+- [x] Login itself only after write-gate if it hits Anthropic (`CLAUDE_WRITE_APPROVED=1`; `--dry-run` ungated — verified)
 
 **Dependencies:** Task 14  
+**Parallel track:** A (code). May run beside Track B docs drafts.  
 **Files likely touched:**
 - `crates/gents-cli/src/commands/claude_login.rs`
 - `crates/gents-cli/src/commands/claude_auth_probe.rs`
 - `crates/gents-cli/src/cli/args.rs`
+- `crates/gents-cli/src/cli/args/tests.rs`
 - `crates/gents-cli/src/commands/mod.rs`
 - `crates/gents-cli/src/lib.rs`
 
 **Estimated scope:** M
 
+**Status:** DONE. Units green (12); rebuilt `./target/debug/gents` help/probe/dry-run verified against spike seat.
+
 ---
 
-## Task 18: Operator preset / recipe
+## Task 18: Operator preset / recipe — Track B draft
 
 **Description:** Document and/or add init/config helpers for the Path A recipe:
 OpenAiCompatible → proxy `/v1`, dummy key, model `claude-plan`, text-only tools.
 
 **Acceptance criteria:**
-- [ ] Exact operator commands recorded (init, disable tools, start proxy, chat)
-- [ ] Recipe uses isolated homes for smoke; warns about prod homes
-- [ ] No new provider kind required
+- [x] Exact operator commands recorded (init, disable tools, start proxy, chat)
+- [x] Recipe uses isolated homes for smoke; warns about prod homes
+- [x] No new provider kind required
 
 **Verification:**
-- [ ] Manual dry run of commands against fake proxy (no Claude) where possible
+- [x] Flags cross-checked against rebuilt `./target/debug/gents claude-{login,auth-probe,proxy} --help` and `InitArgs`
+- [ ] Manual dry run of commands against fake proxy (no Claude) where possible — deferred to Task 20 packaging smoke
 
-**Dependencies:** Tasks 16–17  
+**Dependencies:** Task 16 soft; finalize flags after Task 17  
+**Parallel track:** B (docs-only; no `args.rs` edits)  
 **Files likely touched:**
-- `docs/` recipe section and/or small CLI preset wiring if approved in Task 14
+- `docs/design-notes/SPEC-claude-phase6-packaging.md` (operator recipe section)
 
 **Estimated scope:** S–M
 
+**Status:** DONE (docs). Operator recipe finalized against verified Task 17 flags.
+
 ---
 
-## Task 19: backends.md + spike status
+## Task 19: backends.md + spike status — Track B draft
 
 **Description:** Add Claude Max subscription row to `docs/backends.md` and mark
 Phase 6 Path A status on the design note.
 
 **Acceptance criteria:**
-- [ ] backends.md describes loopback completer path, billing = plan meter, no oat
-- [ ] Distinguishes from Console API-key Anthropic usage
-- [ ] Parent spike note links Phase 6 SPEC and packaging status
+- [x] backends.md describes loopback completer path, billing = plan meter, no oat
+- [x] Distinguishes from Console API-key Anthropic usage
+- [x] Parent spike note links Phase 6 SPEC and packaging status
 
 **Verification:**
-- [ ] Manual doc review
+- [x] Manual doc review against Task 17 help/probe output and Task 18 recipe
 
-**Dependencies:** Task 18  
+**Dependencies:** Task 18 soft for final wording; draftable now from SPEC  
+**Parallel track:** B (docs-only)  
 **Files likely touched:**
 - `docs/backends.md`
 - `docs/design-notes/claude-subscription-spike.md`
 
 **Estimated scope:** S
 
+**Status:** DONE (docs). Matrix row + Path A section in backends.md; spike status marked Phase 6 Path A partial / packaging next.
+
 ---
 
 ## Checkpoint: Packaging docs/code ready for live smoke (after Tasks 15–19)
 
-- [ ] Completer fixtures green
-- [ ] Proxy fake path green
-- [ ] Login/probe present; no oat writes
-- [ ] Docs/recipe present
-- [ ] Human OK before gated reproduction smoke
+- [x] Completer fixtures green
+- [x] Proxy fake path green
+- [x] Login/probe present; no oat writes (spike probe verified)
+- [x] Docs/recipe present (Tasks 18–19)
+- [x] Human OK before gated reproduction smoke
 
 ---
 
@@ -604,15 +615,15 @@ probe → proxy → gents text turn → confirm documents + no oat. Requires
 **CLAUDE WRITE REQUEST #4**.
 
 **Acceptance criteria:**
-- [ ] Write request #4 approved before live Claude
-- [ ] Assistant text completes (e.g. `pong`)
-- [ ] `OAuthCredential` still 0 for Anthropic/Claude tokens
-- [ ] `AgentToolCall` = 0 / tools disabled
-- [ ] Evidence note under `.scratch/claude-spike/logs/` or packaging log path
+- [x] Write request #4 approved before live Claude
+- [x] Assistant text completes (e.g. `pong`)
+- [x] `OAuthCredential` still 0 for Anthropic/Claude tokens
+- [x] `AgentToolCall` = 0 / tools disabled
+- [x] Evidence note under `.scratch/claude-spike/logs/` or packaging log path
 
 **Verification:**
-- [ ] Manual: correlate proxy/completer logs with gents GraphQL harvest
-- [ ] Abort on `tool_use` or unexpected auth/API-key path
+- [x] Manual: correlate proxy/completer logs with gents GraphQL harvest
+- [x] Abort on `tool_use` or unexpected auth/API-key path
 
 **Dependencies:** Tasks 15–19 + human write approval #4  
 **Files likely touched:**
@@ -620,11 +631,13 @@ probe → proxy → gents text turn → confirm documents + no oat. Requires
 
 **Estimated scope:** S (execution), gated
 
+**Status:** DONE. Write #4 approved; Rust `gents claude-proxy` on `:8787` + spike chat returned `pong` (`request_id=6ef9078d-…`). GraphQL: `OAuthCredential=0`, `AgentToolCall=0`, 2 completed InferenceCalls on OpenAiCompatible/`claude-plan`. Proxy log: 2× `mode=claude`, `had_tools_fields=false`. Evidence: `.scratch/claude-spike/logs/task20-packaging-evidence.md` (+ `task20-raw.json`).
+
 ---
 
 ## Checkpoint: Phase 6 Path A complete
 
-- [ ] Task 20 evidence filed
-- [ ] SPEC success criteria checked
-- [ ] A2 explicitly still deferred
+- [x] Task 20 evidence filed
+- [x] SPEC success criteria checked
+- [x] A2 explicitly still deferred
 - [ ] Ready for human merge/review decision (separate from this spike gate)

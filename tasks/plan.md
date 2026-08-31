@@ -96,17 +96,19 @@ Phase 0 toolchain/isolation
 - [x] Task 14: Human review / lock Path A open questions
 - [x] Task 15: Rust completer lib + fixtures (`claude-completer-lib`) — 6/6 via Herdr `wP:pA`
 - [x] Task 16: Productize loopback proxy (`claude-loopback-proxy` → `gents claude-proxy`)
-- [ ] Task 17: `gents claude-login` + `claude-auth-probe` (no oat)
-- [ ] Task 18: Operator preset / recipe (init + text-only behavior)
-- [ ] Task 19: `docs/backends.md` + spike status update
-- [ ] Task 20: **GATED** packaging reproduction smoke (write request #4) — only after 15–19
+- [x] Task 17: `gents claude-login` + `claude-auth-probe` (no oat) — **Track A DONE** (12 unit tests; spike probe + dry-run verified)
+- [x] Task 18: Operator preset / recipe (init + text-only behavior) — **Track B DONE** (SPEC recipe finalized vs verified flags)
+- [x] Task 19: `docs/backends.md` + spike status update — **Track B DONE**
+- [x] Task 20: **GATED** packaging reproduction smoke (write request #4) — evidence in `task20-packaging-evidence.md`
+
+Path A packaging smoke complete under write #4. Next: human merge/review decision; A2 remains deferred.
 
 ### Checkpoint: Path A packaged
-- [ ] Fixture fail-closed in-tree
-- [ ] Login/probe do not write `OAuthCredential` tokens
-- [ ] Documented OpenAiCompatible → proxy → Claude path works
-- [ ] backends.md row landed
-- [ ] No Lean/schema change
+- [x] Fixture fail-closed in-tree
+- [x] Login/probe do not write `OAuthCredential` tokens
+- [x] Documented OpenAiCompatible → proxy → Claude path works
+- [x] backends.md row landed
+- [x] No Lean/schema change
 
 ## Risks and Mitigations
 

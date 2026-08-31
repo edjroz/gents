@@ -79,14 +79,18 @@ the Path A contract is stable.
 ```bash
 # Fixture / unit (no Claude)
 cargo test -p gents claude_completer -- --nocapture
-cargo test -p gents-cli claude_ -- --nocapture
+cargo test -p gents-cli --lib claude_ -- --nocapture
 
 # Login / probe (may hit Anthropic auth — WRITE GATE if network login)
-gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"
+gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
+gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"   # needs CLAUDE_WRITE_APPROVED=1
 gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
 
 # Local OpenAI adapter (Rust)
-PROXY_USE_CLAUDE=1 CLAUDE_WRITE_APPROVED=1 gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR"
+# Default = canned (no Claude). Live needs PROXY_USE_CLAUDE=1 + CLAUDE_WRITE_APPROVED=1.
+gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR" --host 127.0.0.1 --port 8787
+PROXY_USE_CLAUDE=1 CLAUDE_WRITE_APPROVED=1 \
+  gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR" --host 127.0.0.1 --port 8787
 
 # Operator gents home (isolated during packaging smokes)
 gents init --home "$GENTS_HOME" --agent-name claude-plan \
@@ -97,7 +101,91 @@ gents init --home "$GENTS_HOME" --agent-name claude-plan \
   --model-name claude-plan
 ```
 
-(Exact CLI flags must match installed `gents`; record actuals in packaging log.)
+(Exact CLI flags verified against `crates/gents-cli` on branch
+`spike/claude-subscription-plan`. Prefer `./target/debug/gents` until the
+installed `~/.local/bin/gents` is rebuilt with Path A commands.)
+
+## Operator recipe (Path A, experimental)
+
+Use **isolated** homes and Claude config dirs. Do **not** point these commands
+at prod `~/.gents` or a personal `~/.claude` during packaging smokes.
+
+### 0. Isolate paths
+
+```bash
+REPO_ROOT="$(pwd)"   # gents checkout
+SPIKE="$REPO_ROOT/.scratch/claude-spike"
+export CLAUDE_CONFIG_DIR="$SPIKE/claude-config"
+export GENTS_HOME="$SPIKE/gents-home-path-a"
+mkdir -p "$CLAUDE_CONFIG_DIR" "$GENTS_HOME" "$SPIKE/logs" "$SPIKE/workdir"
+```
+
+### 1. Seat login + probe (no DefraDB oat)
+
+```bash
+# Dry-run prints planned argv; never contacts Anthropic.
+gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
+
+# Live login wraps `claude auth login --claudeai` and requires a numbered
+# Claude write approval + CLAUDE_WRITE_APPROVED=1. Prefer a human-interactive
+# shell if the Claude CLI needs keychain / browser.
+CLAUDE_WRITE_APPROVED=1 gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"
+
+# Read-only probe (no write gate). Expect logged_in=true, auth_method=claude.ai,
+# subscription_type=max, api_key_source=none, oauth_credential_written=false.
+gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+```
+
+### 2. Start loopback OpenAI adapter
+
+```bash
+# Canned / offline wiring check (default; no Claude traffic):
+gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR" --host 127.0.0.1 --port 8787
+
+# Live Claude path (WRITE GATE):
+PROXY_USE_CLAUDE=1 CLAUDE_WRITE_APPROVED=1 \
+  gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR" --host 127.0.0.1 --port 8787
+```
+
+Adapter contract:
+
+- Loopback bind only (`127.0.0.1` / `localhost` / `::1`)
+- Client model slug `claude-plan`
+- Strips `tools` / `tool_choice`; completer uses `--tools ""` and fails closed on `tool_use`
+- Child env strips `ANTHROPIC_*` / cloud Anthropic vars; never `claude --bare`
+
+### 3. Init isolated gents home → stock OpenAiCompatible
+
+No new `BackendProviderKind`. Point Chat Completions at the proxy with a dummy key:
+
+```bash
+gents init --home "$GENTS_HOME" --agent-name claude-plan \
+  --inference-url "http://127.0.0.1:8787/v1" \
+  --provider-kind OpenAiCompatible \
+  --openai-wire-api chat-completions \
+  --api-key not-used \
+  --model-name claude-plan
+# Default tool package is readonly (omit --write / --yolo for text-only Path A).
+```
+
+### 4. Serve + one text turn (live = WRITE GATE)
+
+```bash
+gents server --home "$GENTS_HOME"
+# In another pane, after write approval #N for a live Claude turn:
+gents chat --home "$GENTS_HOME"   # or the repo's preferred interactive chat entry
+```
+
+Abort if: `tool_use` appears, probe shows API-key auth, any `OAuthCredential`
+upsert for Claude, or traffic leaves loopback.
+
+### 5. Verify no oat
+
+```bash
+gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+# Confirm oauth_credential_written=false and credential_store=claude_config_dir.
+# On the smoke home, OAuthCredential count for any Claude/Anthropic provider must stay 0.
+```
 
 ## Project structure (expected touch points)
 
@@ -178,14 +266,16 @@ Coverage bar: parser + env sanitize covered by unit tests before any live Claude
 
 ## Success criteria
 
-- [ ] Completer library parses fixtures fail-closed without invoking Claude
-- [ ] Documented operator path: login → proxy → gents OpenAiCompatible turn
-- [ ] `gents claude-login` / `claude-auth-probe` exist and do not write oat docs
-- [ ] `OAuthCredential` count for Claude provider remains 0 on packaging smoke home
-- [ ] `docs/backends.md` documents Claude Max subscription via loopback completer
-- [ ] Parent spike design note marks Phase 6 Path A status (packaged / partial)
-- [ ] No Lean or schema changes
-- [ ] Any live Claude traffic used numbered write approvals
+- [x] Completer library parses fixtures fail-closed without invoking Claude
+- [x] Documented operator path: login → proxy → gents OpenAiCompatible turn
+- [x] `gents claude-login` / `claude-auth-probe` exist and do not write oat docs
+- [x] `OAuthCredential` count for Claude provider remains 0 on packaging smoke home
+- [x] `docs/backends.md` documents Claude Max subscription via loopback completer
+- [x] Parent spike design note marks Phase 6 Path A status (packaged / partial)
+- [x] No Lean or schema changes
+- [x] Any live Claude traffic used numbered write approvals
+
+Evidence: `.scratch/claude-spike/logs/task20-packaging-evidence.md` (write request #4). A2 remains deferred.
 
 ## Open questions — locked 2026-08-30
 

@@ -20,6 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
+| Claude Max subscription (Path A experimental) | Stock `OpenAiCompatible` + Chat Completions → `gents claude-proxy` loopback (`127.0.0.1:8787/v1`) → Claude CLI completer | Claude CLI seat in explicit `--config-dir` / `CLAUDE_CONFIG_DIR` (**no** DefraDB `OAuthCredential` / oat) | SSE via proxy | Text-only: proxy strips tools; completer `--tools ""` + fail-closed on `tool_use` | N/A (text completer) | Dummy API key; model slug `claude-plan`; Anthropic/cloud env stripped from child | Proxy flattens OpenAI chat → Claude stream-json text | Unit/canned proxy + completer fixtures; live under Claude write gate |
 
 ## Probe lifecycle and health (#640)
 
@@ -251,3 +252,76 @@ fields (`chatgpt_plan_type`, `is_fedramp`) stay null/false for Grok.
 
 - `gents grok-auth-probe` / `xai-auth-probe` is read-only.
 - `gents diagnose` reports `checks.xai_auth` parallel to `checks.chatgpt_auth`.
+
+## Claude Max subscription (Path A experimental, no oat)
+
+Use a Claude Max / Claude.ai subscription seat as a **gents-owned text
+completer** without a native Anthropic Messages provider and without storing
+Anthropic OAuth tokens in DefraDB.
+
+This is **not** Anthropic Console API-key billing. Path A keeps the seat in an
+explicit Claude CLI `--config-dir` (`CLAUDE_CONFIG_DIR`), wraps official
+`claude auth login --claudeai`, and fronts the seat with a loopback OpenAI Chat
+Completions adapter (`gents claude-proxy`). Stock gents talks to that adapter as
+`OpenAiCompatible` + `chat-completions` with model `claude-plan` and a dummy API
+key.
+
+Design notes:
+
+- [`docs/design-notes/claude-subscription-spike.md`](design-notes/claude-subscription-spike.md)
+- [`docs/design-notes/SPEC-claude-phase6-packaging.md`](design-notes/SPEC-claude-phase6-packaging.md)
+  (operator recipe)
+
+### Setup (isolated smoke homes only)
+
+Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
+
+1. Login / probe the Claude CLI seat (no DefraDB write):
+
+   ```sh
+   gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
+   # Live login needs numbered Claude write approval + CLAUDE_WRITE_APPROVED=1
+   gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+   ```
+
+2. Start the loopback adapter (default canned; live needs double gate):
+
+   ```sh
+   gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR" --host 127.0.0.1 --port 8787
+   # Live:
+   # PROXY_USE_CLAUDE=1 CLAUDE_WRITE_APPROVED=1 gents claude-proxy --config-dir "$CLAUDE_CONFIG_DIR"
+   ```
+
+3. Init an isolated gents home pointing at the proxy:
+
+   ```sh
+   gents init --home "$GENTS_HOME" --agent-name claude-plan \
+     --inference-url "http://127.0.0.1:8787/v1" \
+     --provider-kind OpenAiCompatible \
+     --openai-wire-api chat-completions \
+     --api-key not-used \
+     --model-name claude-plan
+   ```
+
+### Endpoint / billing choice
+
+| Path | Base URL | Auth / billing |
+| --- | --- | --- |
+| **Claude Max Path A (this recipe)** | `http://127.0.0.1:8787/v1` via `gents claude-proxy` | Claude.ai subscription seat in `CLAUDE_CONFIG_DIR`; plan meter; **no oat in DefraDB** |
+| **Anthropic Console API key** | Anthropic API / Console-billed usage | API key / Console billing — **out of Path A scope**; do not confuse with Max seat |
+
+### Failure modes
+
+| Symptom | Meaning | Fix |
+| --- | --- | --- |
+| Probe `logged_in=false` | Seat missing / wrong `--config-dir` | Re-run login against the intended config dir (write-gated) |
+| Live proxy 502 without approval | Double gate closed | Set `PROXY_USE_CLAUDE=1` **and** `CLAUDE_WRITE_APPROVED=1` after numbered approval |
+| Completer / proxy errors on `tool_use` | Tools leaked into Claude path | Keep text-only; proxy strips tools; do not enable Claude tools |
+| Expecting DefraDB Claude credential | Wrong mental model (Grok/Codex-shaped) | Path A never upserts `OAuthCredential` for Claude |
+
+### Credential storage
+
+Seat truth lives only in Claude CLI config under `--config-dir`.
+`gents claude-login` / `claude-auth-probe` report status and explicitly set
+`oauth_credential_written=false`. There is no Claude refresh writer in gents for
+Path A.

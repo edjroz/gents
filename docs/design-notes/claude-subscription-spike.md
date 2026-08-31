@@ -6,8 +6,11 @@ crate. Companion to `xai-grok-oauth-spike.md` (different seat, same thesis:
 gents owns the loop + documents; the vendor CLI is only a billed completer).
 
 **Status:** Phases 0–5 complete; Phase 5 verdict **Go** (2026-08-30). Phase 6
-Path A packaging SPEC drafted for review. Implementation remains
-plumbing/integration — **not** a Lean lifecycle change.
+Path A packaging is **complete** under write request #4: Rust `gents
+claude-proxy` + isolated spike chat returned `pong`; GraphQL
+`OAuthCredential=0` / `AgentToolCall=0`; evidence in
+`.scratch/claude-spike/logs/task20-packaging-evidence.md`. A2 native Anthropic
+provider remains deferred. Not a Lean lifecycle change.
 
 ## Hard operating rule — Claude write gate
 

@@ -85,6 +85,18 @@ pub(crate) enum Command {
     )]
     GrokAuthProbe(GrokAuthProbeArgs),
     #[command(
+        name = "claude-login",
+        about = "Sign in to Claude Max via official Claude CLI (seat stays in --config-dir; no oat in DefraDB)",
+        after_help = "Path A auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires CLAUDE_WRITE_APPROVED=1 after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
+    )]
+    ClaudeLogin(ClaudeLoginArgs),
+    #[command(
+        name = "claude-auth-probe",
+        about = "Probe a Claude CLI seat under --config-dir (read-only; no oat in DefraDB)",
+        after_help = "Path A probe: reports logged_in / auth_method / subscription_type from `claude auth status`.\nSeat lives in Claude config, not DefraDB. Never upserts OAuthCredential."
+    )]
+    ClaudeAuthProbe(ClaudeAuthProbeArgs),
+    #[command(
         name = "claude-proxy",
         about = "Run the experimental Path A loopback OpenAI adapter for Claude Max (no oat in DefraDB)"
     )]
@@ -514,6 +526,48 @@ pub(crate) struct GrokLoginArgs {
     pub(crate) agent_did: Option<String>,
     #[arg(long, default_value = "xai-oauth")]
     pub(crate) provider: String,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct ClaudeLoginArgs {
+    #[arg(
+        long,
+        help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default. Seat stays here; gents does not store Anthropic oat in DefraDB."
+    )]
+    pub(crate) config_dir: PathBuf,
+    #[arg(
+        long,
+        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
+    )]
+    pub(crate) claude_bin: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Print planned login argv and exit without contacting Anthropic"
+    )]
+    pub(crate) dry_run: bool,
+    #[arg(
+        long,
+        help = "Use Anthropic Console (API usage billing) instead of Claude subscription. Path A default is --claudeai."
+    )]
+    pub(crate) console: bool,
+    #[arg(long, help = "Pre-populate email address on the login page")]
+    pub(crate) email: Option<String>,
+    #[arg(long, help = "Force SSO login flow")]
+    pub(crate) sso: bool,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct ClaudeAuthProbeArgs {
+    #[arg(
+        long,
+        help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
+    )]
+    pub(crate) config_dir: PathBuf,
+    #[arg(
+        long,
+        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
+    )]
+    pub(crate) claude_bin: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
