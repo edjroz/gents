@@ -123,6 +123,12 @@ models:
 - Startup health check against proxy `/healthz`
 - Keep standalone proxy command
 
+**Implementation note (landed):** A2a-2 runs the existing Path A adapter
+**in-process** under `gents server` (same binary, graceful shutdown via the
+server watch channel). Operator surface is still one command; standalone
+`gents claude-proxy` remains for debug. This is not A2b — Claude still speaks
+OpenAI Chat Completions over loopback HTTP.
+
 ### A2a-3 Docs / recipe
 
 - Update `docs/backends.md` unified-suite section

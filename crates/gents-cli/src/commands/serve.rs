@@ -16,6 +16,9 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::cli::*;
+use crate::commands::claude_proxy::{
+    bind_claude_proxy, wait_for_claude_proxy_healthz, ClaudeProxyConfig,
+};
 use crate::commands::codex_shim::{bind_codex_shim, CodexShimBindArgs};
 use crate::http::runtime_contract_router;
 use crate::shared::{P2pAdmissionState, *};
@@ -76,6 +79,51 @@ fn announce_codex_shim(
         "shim_home": bound.codex_home().to_path_buf(),
         "codex_home": bound.codex_home().to_path_buf(),
         "event_log": bound.trace_path().to_path_buf(),
+    })
+}
+
+fn validate_claude_proxy_args(args: &ServeArgs) -> Result<()> {
+    if !args.claude_proxy {
+        if args.claude_config_dir.is_some()
+            || args.claude_workdir.is_some()
+            || args.claude_log_dir.is_some()
+            || args.claude_fake_completer.is_some()
+            || args.claude_bin.is_some()
+        {
+            anyhow::bail!(
+                "--claude-config-dir / --claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer require --claude-proxy"
+            );
+        }
+        return Ok(());
+    }
+    let Some(config_dir) = args.claude_config_dir.as_ref() else {
+        anyhow::bail!("--claude-proxy requires --claude-config-dir");
+    };
+    if !config_dir.is_dir() {
+        anyhow::bail!(
+            "--claude-config-dir {} is not a directory",
+            config_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn managed_claude_proxy_config(args: &ServeArgs) -> Result<ClaudeProxyConfig> {
+    validate_claude_proxy_args(args)?;
+    let config_dir = args
+        .claude_config_dir
+        .clone()
+        .context("internal: --claude-proxy missing --claude-config-dir after validation")?;
+    Ok(ClaudeProxyConfig {
+        host: args.claude_proxy_host.clone(),
+        port: args.claude_proxy_port,
+        config_dir,
+        workdir: args.claude_workdir.clone(),
+        log_dir: args.claude_log_dir.clone(),
+        model: args.claude_model.clone(),
+        canned_text: "pong".to_string(),
+        fake_completer: args.claude_fake_completer.clone(),
+        claude_bin: args.claude_bin.clone(),
     })
 }
 
@@ -393,6 +441,7 @@ pub(crate) async fn serve_with_control(
     if args.codex_shim_public_url.is_some() && codex_shim_auth_token.is_none() {
         anyhow::bail!("--codex-shim-public-url requires --codex-shim-auth-token-env");
     }
+    validate_claude_proxy_args(&args)?;
     let home_dir = resolve_home_dir(args.home.as_deref());
     let data_dir = args
         .data_dir
@@ -797,6 +846,43 @@ pub(crate) async fn serve_with_control(
         None => None,
     };
 
+    let mut claude_proxy_output = None;
+    let mut claude_proxy_handle = None;
+    if args.claude_proxy {
+        let proxy_config = managed_claude_proxy_config(&args)?;
+        let proxy_shutdown = shutdown_tx.subscribe();
+        match bind_claude_proxy(proxy_config, proxy_shutdown).await {
+            Ok((info, serve)) => {
+                if let Err(error) = wait_for_claude_proxy_healthz(info.bind).await {
+                    let _ = shutdown_tx.send(true);
+                    let _ = (&mut run_handle).await;
+                    if let Some(handle) = codex_shim_handle.as_mut() {
+                        let _ = handle.await;
+                    }
+                    return Err(error).context(
+                        "managed Claude proxy bound but failed healthz; runtime shut down",
+                    );
+                }
+                eprintln!(
+                    "Claude proxy managed by gents server on {} mode={} model={} write_approved={}",
+                    info.endpoint, info.mode, info.model, info.write_approved
+                );
+                claude_proxy_output = Some(info.to_json());
+                claude_proxy_handle = Some(tokio::spawn(serve));
+            }
+            Err(error) => {
+                let _ = shutdown_tx.send(true);
+                let _ = (&mut run_handle).await;
+                if let Some(handle) = codex_shim_handle.as_mut() {
+                    let _ = handle.await;
+                }
+                return Err(error).context(
+                    "failed to start managed Claude proxy; runtime shut down rather than serving without it",
+                );
+            }
+        }
+    }
+
     let output = json!({
         "status": "serving",
         "behavior_readiness": behavior_readiness,
@@ -814,6 +900,7 @@ pub(crate) async fn serve_with_control(
         "p2p_listen_addresses": p2p_status.get("p2p_listen_addresses").cloned().unwrap_or_else(|| json!([])),
         "p2p_admission": p2p_status.get("p2p_admission").cloned().unwrap_or(Value::Null),
         "codex_shim": codex_shim_output,
+        "claude_proxy": claude_proxy_output,
         "apply_root": pack_apply,
     });
     if let Some(ready) = ready {
@@ -854,13 +941,42 @@ pub(crate) async fn serve_with_control(
     }
 
     if let Some(handle) = codex_shim_handle.as_mut() {
+        if let Some(proxy_handle) = claude_proxy_handle.as_mut() {
+            tokio::select! {
+                result = &mut run_handle => {
+                    result.context("joining gents runtime task")?
+                }
+                result = handle => {
+                    result.context("joining Codex shim task")?
+                        .context("Codex shim task failed")?;
+                    Ok(())
+                }
+                result = proxy_handle => {
+                    result.context("joining managed Claude proxy task")?
+                        .context("managed Claude proxy task failed")?;
+                    Ok(())
+                }
+            }
+        } else {
+            tokio::select! {
+                result = &mut run_handle => {
+                    result.context("joining gents runtime task")?
+                }
+                result = handle => {
+                    result.context("joining Codex shim task")?
+                        .context("Codex shim task failed")?;
+                    Ok(())
+                }
+            }
+        }
+    } else if let Some(proxy_handle) = claude_proxy_handle.as_mut() {
         tokio::select! {
             result = &mut run_handle => {
                 result.context("joining gents runtime task")?
             }
-            result = handle => {
-                result.context("joining Codex shim task")?
-                    .context("Codex shim task failed")?;
+            result = proxy_handle => {
+                result.context("joining managed Claude proxy task")?
+                    .context("managed Claude proxy task failed")?;
                 Ok(())
             }
         }
@@ -1382,4 +1498,65 @@ mod shim_host_tests {
         let huge_pending = parse_server(&["--p2p-max-pending-dags", &over_gauge]);
         assert!(resolve_server_p2p_config(tempdir.path(), &huge_pending).is_err());
     }
+
+    #[test]
+    fn managed_claude_proxy_requires_config_dir() {
+        let args = parse_server(&["--claude-proxy"]);
+        let err = validate_claude_proxy_args(&args).expect_err("config dir required");
+        assert!(
+            err.to_string().contains("--claude-proxy requires --claude-config-dir"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn managed_claude_proxy_rejects_orphan_flags() {
+        let args = parse_server(&["--claude-config-dir", "/tmp"]);
+        let err = validate_claude_proxy_args(&args).expect_err("orphan flags");
+        assert!(
+            err.to_string().contains("require --claude-proxy"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_claude_proxy_binds_and_healthz() {
+        let temps = tempfile::tempdir().expect("tempdir");
+        let config_dir = temps.path().join("claude-config");
+        let workdir = temps.path().join("workdir");
+        let log_dir = temps.path().join("logs");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config = ClaudeProxyConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            config_dir,
+            workdir: Some(workdir),
+            log_dir: Some(log_dir),
+            model: "claude-sonnet-5".into(),
+            canned_text: "pong".into(),
+            fake_completer: None,
+            claude_bin: None,
+        };
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (info, serve) = bind_claude_proxy(config, shutdown_rx)
+            .await
+            .expect("bind managed proxy");
+        let handle = tokio::spawn(serve);
+        wait_for_claude_proxy_healthz(info.bind)
+            .await
+            .expect("healthz");
+        let body: serde_json::Value = reqwest::Client::new()
+            .get(format!("http://{}/healthz", info.bind))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(body["mode"], "canned");
+        assert_eq!(body["model"], "claude-sonnet-5");
+        let _ = shutdown_tx.send(true);
+        handle.await.expect("join").expect("proxy ok");
+    }
+
 }

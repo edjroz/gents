@@ -871,3 +871,25 @@ fn deprecated_path_required_args(path: &[&str]) -> Vec<String> {
         _ => panic!("no parse fixture for deprecated path: {path:?}"),
     }
 }
+
+#[test]
+fn server_parses_claude_proxy_flags() {
+    let args = parse_server(&[
+        "--claude-proxy",
+        "--claude-config-dir",
+        "/tmp/claude-config",
+        "--claude-proxy-port",
+        "8799",
+        "--claude-model",
+        "claude-opus-5",
+    ]);
+    assert!(args.claude_proxy);
+    assert_eq!(args.claude_proxy_port, 8799);
+    assert_eq!(
+        args.claude_config_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-config"))
+    );
+    assert_eq!(args.claude_model, "claude-opus-5");
+    assert_eq!(args.claude_proxy_host, "127.0.0.1");
+}
+
