@@ -6,11 +6,11 @@ crate. Companion to `xai-grok-oauth-spike.md` (different seat, same thesis:
 gents owns the loop + documents; the vendor CLI is only a billed completer).
 
 **Status:** Phases 0–5 complete; Phase 5 verdict **Go** (2026-08-30). Phase 6
-Path A packaging is **complete** under write request #4: Rust `gents
-claude-proxy` + isolated spike chat returned `pong`; GraphQL
-`OAuthCredential=0` / `AgentToolCall=0`; evidence in
-`.scratch/claude-spike/logs/task20-packaging-evidence.md`. A2 native Anthropic
-provider remains deferred. Not a Lean lifecycle change.
+Path A packaging is **complete** under write request #4. A2a unified prod suite
+(managed Claude proxy under `gents server`) is **complete** (human-confirmed
+2026-09-01). Next stage is **A2b in-process completer** — SPEC draft only:
+[`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md). Not a Lean
+lifecycle change.
 
 ## Hard operating rule — Claude write gate
 
@@ -85,7 +85,8 @@ Build order is strict: each phase’s exit criteria unlock the next.
 | [`SPEC-claude-phase4-document-verify.md`](./SPEC-claude-phase4-document-verify.md) | 4 |
 | [`SPEC-claude-phase5-billing-confirmation.md`](./SPEC-claude-phase5-billing-confirmation.md) | 5 |
 | [`SPEC-claude-phase6-packaging.md`](./SPEC-claude-phase6-packaging.md) | 6 (Path A) |
-| [`SPEC-claude-a2a-unified-suite.md`](./SPEC-claude-a2a-unified-suite.md) | A2a (approved next) |
+| [`SPEC-claude-a2a-unified-suite.md`](./SPEC-claude-a2a-unified-suite.md) | A2a (complete) |
+| [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md) | A2b (draft) |
 
 ## Spike-level success / fail
 

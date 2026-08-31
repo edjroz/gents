@@ -284,10 +284,11 @@ Evidence: `.scratch/claude-spike/logs/task20-packaging-evidence.md` (write reque
 3. **Config dir default:** **require explicit `--config-dir`** (no silent `~/.claude`).
 4. **Adapter packaging location:** **`gents claude-proxy`** CLI subcommand
    (local OpenAI Chat Completions adapter in front of Claude CLI).
-5. **A2 (native provider / in-process / desktop):** **deferred at Path A packaging
-   time**; unlocked 2026-08-31 as **A2a managed-proxy unified suite** (see
+5. **A2 (native provider / in-process / desktop):** unlocked 2026-08-31 as
+   **A2a managed-proxy unified suite** (complete 2026-09-01; see
    [`SPEC-claude-a2a-unified-suite.md`](./SPEC-claude-a2a-unified-suite.md)).
-   In-process completer remains A2b.
+   In-process completer is **A2b** — draft SPEC:
+   [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md).
 
 ## Exit
 

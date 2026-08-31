@@ -121,8 +121,20 @@ Locked:
 - Kept `36444a55` in history; hang was healthz-before-spawn
 - `start_managed_claude_proxy` now spawns accept loop then healthz; fail-path joins time-bounded
 - Focused tests green: managed_claude_proxy_* (3), start_managed_spawns_before_healthz, claude_proxy:: (5), server_parses_claude_proxy_flags
-- Remaining: A2a-4 gated live smoke (Claude write approval)
 
+### Checkpoint: A2a complete (2026-09-01)
+- [x] A2a-0..A2a-3 landed
+- [x] A2a-4 gated live verification human-confirmed
+- [x] Unified prod suite success bar met (managed proxy + Grok + Claude `/model`)
+- [ ] Optional: backfill formal A2a-4 evidence note under `.scratch/`
+- [ ] Optional: human merge/review of A2a slice
+
+## Next: A2b in-process Claude completer (SPEC draft)
+
+SPEC: `docs/design-notes/SPEC-claude-a2b-in-process.md`
+
+A2b removes the HTTP loopback child so gents calls the Claude CLI completer
+directly. **No implementation until the SPEC's open questions are locked.**
 
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree

@@ -1,9 +1,10 @@
 # SPEC: Claude A2a — unified prod suite via managed proxy
 
 **Date:** 2026-08-31  
-**Status:** Approved in principle (human decisions locked); implementation not started  
+**Status:** Complete (A2a-0..A2a-4 human-confirmed 2026-09-01)  
 **Parent:** [`claude-subscription-spike.md`](./claude-subscription-spike.md)  
 **Depends on:** Path A packaging complete (`SPEC-claude-phase6-packaging.md`)  
+**Next:** [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md)  
 **Local handoff (not in git):** `.scratch/claude-spike/handoff/claude-a2a-handoff.md`
 
 ## Problem
@@ -140,22 +141,24 @@ still speaks OpenAI Chat Completions over loopback HTTP.
 
 Requires numbered Claude write approval:
 
-- Only `gents server` started (managed proxy on)
-- Codex `/model` shows Grok + Claude
-- Claude text-only turn succeeds
-- Grok turn still succeeds
-- Evidence pack under `.scratch/` or designated log dir
+- [x] Only `gents server` started (managed proxy on)
+- [x] Codex `/model` shows Grok + Claude
+- [x] Claude text-only turn succeeds
+- [x] Grok turn still succeeds
+- [ ] Optional formal evidence pack under `.scratch/` or designated log dir
+
+**Status:** Human-confirmed complete 2026-09-01. Proceeding to A2b SPEC draft.
 
 ## Success criteria
 
-- [ ] Operator can start suite without manually launching `claude-proxy`
-- [ ] Prod Codex `/model` lists Grok and Claude full IDs
-- [ ] Switching models in Codex rewrites bound behavior `backend_id`/`model_name` correctly
-- [ ] Claude path remains oat-free (`OAuthCredential` for Claude = 0)
-- [ ] Claude remains text-only under Path A policy
-- [ ] Live Claude calls still go through write gate
-- [ ] No Lean/schema changes
+- [x] Operator can start suite without manually launching `claude-proxy`
+- [x] Prod Codex `/model` lists Grok and Claude full IDs
+- [x] Switching models in Codex rewrites bound behavior `backend_id`/`model_name` correctly
+- [x] Claude path remains oat-free (`OAuthCredential` for Claude = 0)
+- [x] Claude remains text-only under Path A policy
+- [x] Live Claude calls still go through write gate
+- [x] No Lean/schema changes
 
 ## Exit into A2b
 
-Only after A2a success bar is green in real use. A2b then removes the HTTP child and considers a first-class provider seam.
+A2a success bar is green in real use. A2b removes the HTTP child and considers a first-class provider seam — see [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md).

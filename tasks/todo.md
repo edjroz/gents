@@ -688,8 +688,26 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - [x] **A2a-2** `gents server` manages Claude proxy lifecycle (`--claude-proxy`, required `--claude-config-dir`, healthz, clean shutdown)
   - Kept `36444a55`; hang fixed by `start_managed_claude_proxy` (spawn then healthz) + fail-path timeouts.
 - [x] **A2a-3** Docs/recipe for unified prod suite (backends.md Path A + managed proxy); spike home remains historical until A2a-4 green
+- [x] **A2a-4** **GATED** live verification — human-confirmed complete (2026-09-01). Claude text turns through managed proxy + Grok in unified prod suite; Path A contracts held (oat-free / text-only / write gate). Formal evidence pack may still be backfilled under `.scratch/claude-spike/logs/` if desired.
 
-- [ ] **A2a-4** **GATED** live verification (Claude write approval): Claude text pong + Grok turn + oat=0 + tools stripped
+### Checkpoint: A2a complete
+- [x] Operator can start suite without manually launching `claude-proxy`
+- [x] Prod Codex `/model` lists Grok + Claude full IDs
+- [x] Claude path remains oat-free / text-only under Path A policy
+- [x] Managed proxy hang fix landed (`8bfe991c`)
+- [ ] Human merge/review of A2a branch slice (optional; separate from A2b)
 
-**Not doing in A2a:** in-process completer, BackendProviderKind/schema/Lean, Claude tool bridging, oat storage, cross-home federation, desktop UI.
+---
+
+## A2b in-process Claude completer (next stage — SPEC draft)
+
+**SPEC:** `docs/design-notes/SPEC-claude-a2b-in-process.md`  
+**Status:** Draft for human review. **Do not implement until SPEC approved.**
+
+Goal: remove the loopback HTTP child so the owned loop / server calls the Claude CLI completer directly while keeping Path A contracts (seat in `--config-dir`, no oat, text-only, write gate).
+
+- [ ] **A2b-0** Human review/lock A2b SPEC open questions (provider seam, schema/Lean, proxy retention, tools policy)
+- [ ] **A2b-1** … (tasks expand only after A2b-0)
+
+**Not doing until A2b SPEC locks:** new `BackendProviderKind`, GraphQL/Lean changes, Claude tool bridging, oat storage, desktop UI.
 
