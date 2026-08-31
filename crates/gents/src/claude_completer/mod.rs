@@ -148,8 +148,14 @@ where
 }
 
 /// Argv for a text-only Claude Code print-mode completer (no `--bare`).
-pub fn completer_argv(prompt: impl AsRef<OsStr>) -> Vec<OsString> {
-    vec![
+///
+/// When `model` is `Some(non-empty)`, forwards `--model <id>` so Path A can
+/// select among Claude full model IDs instead of the CLI seat default.
+pub fn completer_argv(
+    prompt: impl AsRef<OsStr>,
+    model: Option<&str>,
+) -> Vec<OsString> {
+    let mut argv = vec![
         OsString::from("claude"),
         OsString::from("-p"),
         OsString::from("--output-format"),
@@ -162,8 +168,13 @@ pub fn completer_argv(prompt: impl AsRef<OsStr>) -> Vec<OsString> {
         OsString::from("--no-session-persistence"),
         OsString::from("--system-prompt"),
         OsString::from("You are a text-only completer. Reply with plain text only."),
-        prompt.as_ref().to_os_string(),
-    ]
+    ];
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        argv.push(OsString::from("--model"));
+        argv.push(OsString::from(model));
+    }
+    argv.push(prompt.as_ref().to_os_string());
+    argv
 }
 
 #[cfg(test)]
@@ -239,7 +250,7 @@ mod tests {
 
     #[test]
     fn completer_argv_is_text_only_without_bare() {
-        let argv = completer_argv("Reply with exactly: pong");
+        let argv = completer_argv("Reply with exactly: pong", None);
         let as_str: Vec<&str> = argv
             .iter()
             .map(|s| s.to_str().expect("utf8 argv"))
@@ -248,8 +259,34 @@ mod tests {
         assert!(as_str.contains(&"-p"));
         assert!(as_str.contains(&"stream-json"));
         assert!(!as_str.iter().any(|a| *a == "--bare"));
+        assert!(!as_str.iter().any(|a| *a == "--model"));
         let tools_idx = as_str.iter().position(|a| *a == "--tools").expect("--tools");
         assert_eq!(as_str[tools_idx + 1], "");
         assert_eq!(*as_str.last().unwrap(), "Reply with exactly: pong");
+    }
+
+    #[test]
+    fn completer_argv_forwards_full_model_id() {
+        let argv = completer_argv("Reply with exactly: pong", Some("claude-sonnet-5"));
+        let as_str: Vec<&str> = argv
+            .iter()
+            .map(|s| s.to_str().expect("utf8 argv"))
+            .collect();
+        let model_idx = as_str
+            .iter()
+            .position(|a| *a == "--model")
+            .expect("--model");
+        assert_eq!(as_str[model_idx + 1], "claude-sonnet-5");
+        assert_eq!(*as_str.last().unwrap(), "Reply with exactly: pong");
+    }
+
+    #[test]
+    fn completer_argv_skips_blank_model() {
+        let argv = completer_argv("hi", Some("   "));
+        let as_str: Vec<&str> = argv
+            .iter()
+            .map(|s| s.to_str().expect("utf8 argv"))
+            .collect();
+        assert!(!as_str.iter().any(|a| *a == "--model"));
     }
 }

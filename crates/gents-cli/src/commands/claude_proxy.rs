@@ -20,7 +20,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use gents::claude_completer::proxy::{
     flatten_messages, health_body, is_loopback_host, live_claude_allowed, models_list_body,
-    non_stream_body, resolve_mode, sse_payload, stripped_env_vars, DEFAULT_MODEL_ID,
+    non_stream_body, resolve_mode, resolve_request_model, sse_payload, stripped_env_vars,
+    DEFAULT_MODEL_ID, PATH_A_MODEL_IDS,
 };
 use gents::claude_completer::{completer_argv, sanitize_child_env};
 use serde_json::{json, Value};
@@ -140,8 +141,8 @@ async fn health(State(state): State<Arc<ProxyState>>) -> Json<Value> {
     ))
 }
 
-async fn models(State(state): State<Arc<ProxyState>>) -> Json<Value> {
-    Json(models_list_body(&state.model))
+async fn models(State(_state): State<Arc<ProxyState>>) -> Json<Value> {
+    Json(models_list_body(PATH_A_MODEL_IDS))
 }
 
 async fn chat_completions(
@@ -162,10 +163,14 @@ async fn chat_completions(
     let authorization_present = headers.get(header::AUTHORIZATION).is_some();
     let prompt = flatten_messages(&messages);
     let mode = resolve_mode(state.use_claude, state.fake_completer.is_some());
+    let model = resolve_request_model(
+        body.get("model").and_then(Value::as_str),
+        &state.model,
+    );
 
     let entry = json!({
         "ts": chrono_ts(),
-        "model": body.get("model").and_then(Value::as_str).unwrap_or(&state.model),
+        "model": model,
         "message_count": messages.len(),
         "stream": stream,
         "had_tools_fields": had_tools,
@@ -181,11 +186,11 @@ async fn chat_completions(
     let text_result = if !state.use_claude {
         Ok(state.canned_text.clone())
     } else {
-        complete_live(&state, &prompt).await
+        complete_live(&state, &prompt, &model).await
     };
 
     match text_result {
-        Ok(text) => completion_response(&state.model, &text, stream),
+        Ok(text) => completion_response(&model, &text, stream),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({"error": {"message": err.to_string()}})),
@@ -194,7 +199,7 @@ async fn chat_completions(
     }
 }
 
-async fn complete_live(state: &ProxyState, prompt: &str) -> Result<String> {
+async fn complete_live(state: &ProxyState, prompt: &str, model: &str) -> Result<String> {
     if let Some(fake) = &state.fake_completer {
         let output = Command::new(fake)
             .arg(if prompt.is_empty() {
@@ -231,7 +236,7 @@ async fn complete_live(state: &ProxyState, prompt: &str) -> Result<String> {
     } else {
         prompt
     };
-    let mut argv = completer_argv(prompt);
+    let mut argv = completer_argv(prompt, Some(model));
     // Replace leading `claude` with configured binary path.
     if let Some(first) = argv.first_mut() {
         *first = state.claude_bin.as_os_str().to_os_string();
@@ -321,7 +326,7 @@ fn chrono_ts() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gents::claude_completer::proxy::DEFAULT_MODEL_ID;
+    use gents::claude_completer::proxy::{DEFAULT_MODEL_ID, PATH_A_MODEL_IDS};
     use tokio::sync::oneshot;
 
     struct TempDirs {
@@ -398,7 +403,12 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(models["data"][0]["id"], DEFAULT_MODEL_ID);
+        assert_eq!(models["data"].as_array().unwrap().len(), PATH_A_MODEL_IDS.len());
+        assert_eq!(models["data"][0]["id"], PATH_A_MODEL_IDS[0]);
+        assert_eq!(models["data"][1]["id"], "claude-sonnet-5");
+        assert_eq!(models["data"][2]["id"], "claude-haiku-4-5-20251001");
+        assert_eq!(models["data"][3]["id"], "claude-fable-5");
+        assert_eq!(DEFAULT_MODEL_ID, "claude-sonnet-5");
 
         let health: Value = client
             .get(format!("http://127.0.0.1:{port}/healthz"))

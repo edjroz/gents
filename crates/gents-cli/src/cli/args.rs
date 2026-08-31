@@ -597,8 +597,8 @@ pub(crate) struct ClaudeProxyArgs {
     pub(crate) log_dir: Option<PathBuf>,
     #[arg(
         long,
-        default_value = "claude-plan",
-        help = "Client-facing model slug advertised by /v1/models"
+        default_value = "claude-sonnet-5",
+        help = "Default client-facing model when the request omits model. /v1/models advertises the full Path A catalog."
     )]
     pub(crate) model: String,
     #[arg(

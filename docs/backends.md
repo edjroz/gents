@@ -20,7 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
-| Claude Max subscription (Path A experimental) | Stock `OpenAiCompatible` + Chat Completions → `gents claude-proxy` loopback (`127.0.0.1:8787/v1`) → Claude CLI completer | Claude CLI seat in explicit `--config-dir` / `CLAUDE_CONFIG_DIR` (**no** DefraDB `OAuthCredential` / oat) | SSE via proxy | Text-only: proxy strips tools; completer `--tools ""` + fail-closed on `tool_use` | N/A (text completer) | Dummy API key; model slug `claude-plan`; Anthropic/cloud env stripped from child | Proxy flattens OpenAI chat → Claude stream-json text | Unit/canned proxy + completer fixtures; live under Claude write gate |
+| Claude Max subscription (Path A experimental) | Stock `OpenAiCompatible` + Chat Completions → `gents claude-proxy` loopback (`127.0.0.1:8787/v1`) → Claude CLI completer | Claude CLI seat in explicit `--config-dir` / `CLAUDE_CONFIG_DIR` (**no** DefraDB `OAuthCredential` / oat) | SSE via proxy | Text-only: proxy strips tools; completer `--tools ""` + fail-closed on `tool_use` | N/A (text completer) | Dummy API key; full Claude model IDs (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`); Anthropic/cloud env stripped from child | Proxy flattens OpenAI chat → Claude stream-json text and forwards request `--model` | Unit/canned proxy + completer fixtures; live under Claude write gate |
 
 ## Probe lifecycle and health (#640)
 
@@ -263,8 +263,10 @@ This is **not** Anthropic Console API-key billing. Path A keeps the seat in an
 explicit Claude CLI `--config-dir` (`CLAUDE_CONFIG_DIR`), wraps official
 `claude auth login --claudeai`, and fronts the seat with a loopback OpenAI Chat
 Completions adapter (`gents claude-proxy`). Stock gents talks to that adapter as
-`OpenAiCompatible` + `chat-completions` with model `claude-plan` and a dummy API
-key.
+`OpenAiCompatible` + `chat-completions` with full Claude model IDs (default
+`claude-sonnet-5`; catalog also advertises `claude-opus-5`,
+`claude-haiku-4-5-20251001`, `claude-fable-5`) and a dummy API key. The proxy
+forwards the request model as Claude CLI `--model`.
 
 Design notes:
 
@@ -295,13 +297,19 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 3. Init an isolated gents home pointing at the proxy:
 
    ```sh
-   gents init --home "$GENTS_HOME" --agent-name claude-plan \
+   gents init --home "$GENTS_HOME" --agent-name claude-path-a \
      --inference-url "http://127.0.0.1:8787/v1" \
      --provider-kind OpenAiCompatible \
      --openai-wire-api chat-completions \
      --api-key not-used \
-     --model-name claude-plan
+     --model-name claude-sonnet-5
    ```
+
+   After init, expand the backend catalog to the four full IDs (CLI
+   `config backend set` does **not** rewrite `models[]` on update — use a
+   GraphQL `upsert_InferenceBackend` with `models: [...]`, or re-init).
+   Point the default behavior at `claude-sonnet-5` via
+   `gents config behavior set --model-name claude-sonnet-5`.
 
 ### Endpoint / billing choice
 

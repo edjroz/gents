@@ -10,7 +10,17 @@ use uuid::Uuid;
 use super::STRIPPED_ENV_VARS;
 
 /// Default client-facing model slug for the Path A adapter.
-pub const DEFAULT_MODEL_ID: &str = "claude-plan";
+///
+/// Full Claude model IDs only — not the old invented `claude-plan` seat label.
+pub const DEFAULT_MODEL_ID: &str = "claude-sonnet-5";
+
+/// Official Claude full model IDs advertised by Path A `/v1/models`.
+pub const PATH_A_MODEL_IDS: &[&str] = &[
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+    "claude-fable-5",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyMode {
@@ -155,16 +165,31 @@ pub fn sse_payload(text: &str, model: &str) -> String {
     )
 }
 
-pub fn models_list_body(model: &str) -> Value {
+pub fn models_list_body(models: &[&str]) -> Value {
+    let data: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            json!({
+                "id": model,
+                "object": "model",
+                "created": chrono_like_unix_now(),
+                "owned_by": "claude-path-a",
+            })
+        })
+        .collect();
     json!({
         "object": "list",
-        "data": [{
-            "id": model,
-            "object": "model",
-            "created": chrono_like_unix_now(),
-            "owned_by": "claude-path-a",
-        }],
+        "data": data,
     })
+}
+
+/// Prefer a non-empty request model; otherwise fall back to the proxy default.
+pub fn resolve_request_model(request_model: Option<&str>, default_model: &str) -> String {
+    request_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(default_model)
+        .to_string()
 }
 
 pub fn health_body(mode: ProxyMode, model: &str, write_approved: bool, fake: bool) -> Value {
@@ -215,6 +240,50 @@ mod tests {
         assert!(is_loopback_host("::1"));
         assert!(!is_loopback_host("0.0.0.0"));
         assert!(!is_loopback_host("192.168.1.1"));
+    }
+
+    #[test]
+    fn path_a_catalog_is_full_ids_only() {
+        assert_eq!(
+            PATH_A_MODEL_IDS,
+            [
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-haiku-4-5-20251001",
+                "claude-fable-5",
+            ]
+        );
+        assert_eq!(DEFAULT_MODEL_ID, "claude-sonnet-5");
+        assert!(!PATH_A_MODEL_IDS.iter().any(|m| *m == "claude-plan"));
+        assert!(!PATH_A_MODEL_IDS.iter().any(|m| *m == "opus"));
+    }
+
+    #[test]
+    fn models_list_body_advertises_full_catalog() {
+        let body = models_list_body(PATH_A_MODEL_IDS);
+        let ids: Vec<&str> = body["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .map(|row| row["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(ids, PATH_A_MODEL_IDS);
+    }
+
+    #[test]
+    fn resolve_request_model_prefers_request_then_default() {
+        assert_eq!(
+            resolve_request_model(Some("claude-opus-5"), "claude-sonnet-5"),
+            "claude-opus-5"
+        );
+        assert_eq!(
+            resolve_request_model(Some("  "), "claude-sonnet-5"),
+            "claude-sonnet-5"
+        );
+        assert_eq!(
+            resolve_request_model(None, "claude-sonnet-5"),
+            "claude-sonnet-5"
+        );
     }
 
     #[test]
