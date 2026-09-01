@@ -49,6 +49,18 @@ pub enum BackendProviderKind {
         alias = "grok_oauth"
     )]
     XaiGrokOAuth,
+    /// Claude Max / Claude Code CLI subscription seat (Path A in-process).
+    ///
+    /// Not an oat/`OAuthCredential` provider — seat truth lives in the process
+    /// `--claude-config-dir`. `is_agent_scoped_oauth()` stays false.
+    #[serde(
+        rename = "ClaudeCliSubscription",
+        alias = "claude-cli-subscription",
+        alias = "claude_cli_subscription",
+        alias = "claude-max-cli",
+        alias = "claude_max_cli"
+    )]
+    ClaudeCliSubscription,
 }
 
 impl BackendProviderKind {
@@ -73,6 +85,11 @@ impl BackendProviderKind {
             | Some("xai-grok-oauth")
             | Some("xai_oauth")
             | Some("grok_oauth") => Ok(Self::XaiGrokOAuth),
+            Some("ClaudeCliSubscription")
+            | Some("claude-cli-subscription")
+            | Some("claude_cli_subscription")
+            | Some("claude-max-cli")
+            | Some("claude_max_cli") => Ok(Self::ClaudeCliSubscription),
             Some(other) => anyhow::bail!("unknown backend provider kind {other}"),
         }
     }
@@ -83,6 +100,7 @@ impl BackendProviderKind {
             Self::OpenRouter => "OpenRouter",
             Self::ChatGptCodex => "ChatGptCodex",
             Self::XaiGrokOAuth => "XaiGrokOAuth",
+            Self::ClaudeCliSubscription => "ClaudeCliSubscription",
         }
     }
 
@@ -105,6 +123,7 @@ fn provider_display_name(kind: BackendProviderKind) -> &'static str {
         BackendProviderKind::OpenRouter => "OpenRouter",
         BackendProviderKind::ChatGptCodex => "ChatGPT Codex",
         BackendProviderKind::XaiGrokOAuth => "Grok / xAI OAuth",
+        BackendProviderKind::ClaudeCliSubscription => "Claude CLI subscription",
     }
 }
 
@@ -171,6 +190,11 @@ pub async fn discover_models(
     let endpoint = match kind {
         BackendProviderKind::ChatGptCodex => crate::chatgpt_codex::normalize_endpoint(endpoint),
         BackendProviderKind::XaiGrokOAuth => crate::xai_grok_oauth::normalize_endpoint(endpoint),
+        BackendProviderKind::ClaudeCliSubscription => {
+            anyhow::bail!(
+                "ClaudeCliSubscription does not support HTTP model discovery; models are configured on the InferenceBackend document and the seat lives in --claude-config-dir"
+            );
+        }
         _ => endpoint.trim_end_matches('/').to_string(),
     };
     let discovery_path = if kind == BackendProviderKind::XaiGrokOAuth {

@@ -83,28 +83,65 @@ fn announce_codex_shim(
 }
 
 fn validate_claude_proxy_args(args: &ServeArgs) -> Result<()> {
-    if !args.claude_proxy {
-        if args.claude_config_dir.is_some()
-            || args.claude_workdir.is_some()
-            || args.claude_log_dir.is_some()
-            || args.claude_fake_completer.is_some()
-            || args.claude_bin.is_some()
-        {
+    let has_seat_flags = args.claude_config_dir.is_some()
+        || args.claude_workdir.is_some()
+        || args.claude_log_dir.is_some()
+        || args.claude_fake_completer.is_some()
+        || args.claude_bin.is_some()
+        || args.claude_write_approved;
+
+    if args.claude_proxy {
+        let Some(config_dir) = args.claude_config_dir.as_ref() else {
+            anyhow::bail!("--claude-proxy requires --claude-config-dir");
+        };
+        if !config_dir.is_dir() {
             anyhow::bail!(
-                "--claude-config-dir / --claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer require --claude-proxy"
+                "--claude-config-dir {} is not a directory",
+                config_dir.display()
             );
         }
         return Ok(());
     }
-    let Some(config_dir) = args.claude_config_dir.as_ref() else {
-        anyhow::bail!("--claude-proxy requires --claude-config-dir");
-    };
-    if !config_dir.is_dir() {
+
+    // A2b: --claude-config-dir installs the in-process seat without --claude-proxy.
+    if let Some(config_dir) = args.claude_config_dir.as_ref() {
+        if !config_dir.is_dir() {
+            anyhow::bail!(
+                "--claude-config-dir {} is not a directory",
+                config_dir.display()
+            );
+        }
+        return Ok(());
+    }
+
+    if has_seat_flags {
         anyhow::bail!(
-            "--claude-config-dir {} is not a directory",
-            config_dir.display()
+            "--claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer / --claude-write-approved require --claude-config-dir (or --claude-proxy)"
         );
     }
+    Ok(())
+}
+
+fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
+    let Some(config_dir) = args.claude_config_dir.clone() else {
+        gents::claude_subscription::install_process_seat(None);
+        return Ok(());
+    };
+    let seat = gents::claude_subscription::ClaudeSeatConfig::from_server_flags(
+        config_dir,
+        args.claude_write_approved,
+        args.claude_workdir.clone(),
+        args.claude_log_dir.clone(),
+        args.claude_bin.clone(),
+        args.claude_fake_completer.clone(),
+    );
+    std::fs::create_dir_all(&seat.workdir).with_context(|| {
+        format!(
+            "creating Claude workdir {}",
+            seat.workdir.display()
+        )
+    })?;
+    gents::claude_subscription::install_process_seat(Some(seat));
     Ok(())
 }
 
@@ -442,6 +479,7 @@ pub(crate) async fn serve_with_control(
         anyhow::bail!("--codex-shim-public-url requires --codex-shim-auth-token-env");
     }
     validate_claude_proxy_args(&args)?;
+    install_claude_subscription_seat(&args)?;
     let home_dir = resolve_home_dir(args.home.as_deref());
     let data_dir = args
         .data_dir
@@ -1500,13 +1538,55 @@ mod shim_host_tests {
     }
 
     #[test]
-    fn managed_claude_proxy_rejects_orphan_flags() {
-        let args = parse_server(&["--claude-config-dir", "/tmp"]);
+    fn a2b_claude_config_dir_without_proxy_is_allowed() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.scratch/claude-spike/tmp/a2b-config-dir");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let config_dir = root.join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let args = parse_server(&[
+            "--claude-config-dir",
+            config_dir.to_str().unwrap(),
+            "--claude-write-approved",
+        ]);
+        validate_claude_proxy_args(&args).expect("A2b seat flags without --claude-proxy");
+        assert!(!args.claude_proxy);
+        assert!(args.claude_write_approved);
+        assert_eq!(args.claude_config_dir.as_deref(), Some(config_dir.as_path()));
+    }
+
+    #[test]
+    fn claude_seat_orphan_flags_require_config_dir() {
+        let args = parse_server(&["--claude-write-approved"]);
         let err = validate_claude_proxy_args(&args).expect_err("orphan flags");
         assert!(
-            err.to_string().contains("require --claude-proxy"),
+            err.to_string().contains("require --claude-config-dir"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn install_claude_subscription_seat_from_server_flags() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.scratch/claude-spike/tmp/a2b-install-seat");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let config_dir = root.join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let fake = root.join("fake.sh");
+        std::fs::write(&fake, "#!/bin/sh\nprintf pong\n").unwrap();
+        let args = parse_server(&[
+            "--claude-config-dir",
+            config_dir.to_str().unwrap(),
+            "--claude-fake-completer",
+            fake.to_str().unwrap(),
+        ]);
+        install_claude_subscription_seat(&args).expect("install seat");
+        let seat = gents::claude_subscription::process_seat().expect("seat installed");
+        assert_eq!(seat.config_dir, config_dir);
+        assert!(!seat.write_approved);
+        assert_eq!(seat.fake_completer.as_deref(), Some(fake.as_path()));
     }
 
     #[tokio::test]

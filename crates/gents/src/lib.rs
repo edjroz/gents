@@ -17,6 +17,7 @@ pub(crate) mod callback;
 pub mod chatgpt_codex;
 pub mod chatgpt_oauth_refresh;
 pub mod claude_completer;
+pub mod claude_subscription;
 pub mod codex_shim_binding;
 pub mod collection;
 pub mod compaction;

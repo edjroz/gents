@@ -338,6 +338,22 @@ impl RuntimeContext {
                     .await
                 }
             }
+            BackendProviderKind::ClaudeCliSubscription => {
+                let client = crate::claude_subscription::ClaudeSubscriptionClient::new();
+                Box::pin(self.run_behavior_with_client(
+                    behavior,
+                    request_rx,
+                    shutdown,
+                    prompt_builder,
+                    preamble,
+                    loop_tools.clone(),
+                    background_tool_registry,
+                    tool_surface.approval_required_tools().to_vec(),
+                    tool_surface.output_obligations(),
+                    client,
+                ))
+                .await
+            }
         }
     }
 

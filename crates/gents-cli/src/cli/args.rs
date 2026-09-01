@@ -922,35 +922,41 @@ pub(crate) struct ServeArgs {
     pub(crate) claude_proxy_port: u16,
     #[arg(
         long,
-        help = "Required when --claude-proxy is set: Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
+        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Required for --claude-proxy (A2a). For A2b in-process ClaudeCliSubscription, this installs the process seat without starting the HTTP proxy. Explicit — no silent ~/.claude default."
     )]
     pub(crate) claude_config_dir: Option<PathBuf>,
     #[arg(
         long,
-        help = "Working directory for managed Claude CLI child processes. Defaults beside --claude-config-dir when unset."
+        help = "Working directory for Claude CLI child processes. Defaults beside --claude-config-dir when unset."
     )]
     pub(crate) claude_workdir: Option<PathBuf>,
     #[arg(
         long,
-        help = "Log directory for managed Claude proxy-requests.jsonl. Defaults beside --claude-config-dir when unset."
+        help = "Log directory for Claude proxy-requests.jsonl / completer logs. Defaults beside --claude-config-dir when unset."
     )]
     pub(crate) claude_log_dir: Option<PathBuf>,
     #[arg(
         long,
         default_value = "claude-sonnet-5",
-        help = "Default model advertised by the managed Claude proxy when requests omit model"
+        help = "Default Claude model id (managed proxy advertisement / seat default)"
     )]
     pub(crate) claude_model: String,
     #[arg(
         long,
-        help = "Optional Claude CLI binary for the managed proxy. Defaults to `claude` on PATH"
+        help = "Optional Claude CLI binary. Defaults to `claude` on PATH"
     )]
     pub(crate) claude_bin: Option<PathBuf>,
     #[arg(
         long,
-        help = "Optional fake completer for managed-proxy wiring tests"
+        help = "Optional fake completer for Claude wiring tests (managed proxy and A2b in-process)"
     )]
     pub(crate) claude_fake_completer: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "A2b refuse-closed write gate for live Claude CLI spawns. Required for billable Claude; fake completer bypasses this. Numbered human write approval still required before setting it."
+    )]
+    pub(crate) claude_write_approved: bool,
     #[arg(
         long,
         default_value = "127.0.0.1",
@@ -1316,6 +1322,12 @@ pub(crate) enum BackendPresetArg {
     ChatGptCodex,
     #[value(name = "xai-oauth", alias = "grok-oauth")]
     XaiGrokOAuth,
+    #[value(
+        name = "claude-cli-subscription",
+        alias = "claude-subscription",
+        alias = "claude-cli"
+    )]
+    ClaudeCliSubscription,
     #[value(name = "ollama")]
     Ollama,
     #[value(name = "vllm")]
@@ -1332,6 +1344,7 @@ impl BackendPresetArg {
             Self::OpenRouter => "openrouter",
             Self::ChatGptCodex => "chatgpt-codex",
             Self::XaiGrokOAuth => "xai-oauth",
+            Self::ClaudeCliSubscription => "claude-cli-subscription",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
             Self::LlamaCpp => "llama-cpp",
@@ -1343,6 +1356,7 @@ impl BackendPresetArg {
             Self::OpenRouter => BackendProviderKind::OpenRouter,
             Self::ChatGptCodex => BackendProviderKind::ChatGptCodex,
             Self::XaiGrokOAuth => BackendProviderKind::XaiGrokOAuth,
+            Self::ClaudeCliSubscription => BackendProviderKind::ClaudeCliSubscription,
             Self::GenericOpenAiCompatible
             | Self::OpenAi
             | Self::Ollama
@@ -1358,6 +1372,9 @@ impl BackendPresetArg {
             Self::OpenRouter => Some("https://openrouter.ai/api/v1"),
             Self::ChatGptCodex => Some(gents::chatgpt_codex::default_backend_endpoint()),
             Self::XaiGrokOAuth => Some(gents::xai_grok_oauth::default_backend_endpoint()),
+            Self::ClaudeCliSubscription => {
+                Some(gents::claude_subscription::default_backend_endpoint())
+            }
             Self::Ollama => Some(crate::DEFAULT_OLLAMA_ENDPOINT),
             Self::Vllm => Some("http://127.0.0.1:8000/v1"),
             Self::LlamaCpp => Some("http://127.0.0.1:8080/v1"),
@@ -1374,6 +1391,7 @@ impl BackendPresetArg {
             Self::LlamaCpp => Some(crate::DEFAULT_INIT_MODEL_NAME),
             Self::ChatGptCodex => Some(crate::DEFAULT_CHATGPT_CODEX_MODEL_NAME),
             Self::XaiGrokOAuth => Some(crate::DEFAULT_XAI_GROK_OAUTH_MODEL_NAME),
+            Self::ClaudeCliSubscription => Some(gents::claude_subscription::default_model_name()),
             Self::GenericOpenAiCompatible | Self::OpenAi | Self::OpenRouter | Self::Vllm => None,
         }
     }
@@ -1385,6 +1403,7 @@ impl BackendPresetArg {
             Self::GenericOpenAiCompatible
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,
@@ -1398,6 +1417,7 @@ impl BackendPresetArg {
             | Self::OpenRouter
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,

@@ -6,7 +6,8 @@
 **Depends on:** A2a complete (`SPEC-claude-a2a-unified-suite.md`)  
 **Follow-on:** A2c tool bridging (separate SPEC after A2b green)  
 **Branch:** continue on `spike/claude-subscription-plan`  
-**Local handoff (not in git):** `.scratch/claude-spike/handoff/claude-a2b-handoff.md`
+**Local handoff (not in git):** `.scratch/claude-spike/handoff/claude-a2b-handoff.md`  
+**Interrupted session (do not resume):** `1d36dc49-6d24-4cc1-9d4e-67892b52e37e` — A2b-1 was requested (`proceed`) and never started (Grok stream failure).
 
 ## Problem
 

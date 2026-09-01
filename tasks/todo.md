@@ -713,11 +713,17 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - Continue on `spike/claude-subscription-plan`
 
 - [x] **A2b-0** Lock architecture / write-gate / deletion / tools split
-- [ ] **A2b-1** Provider kind + in-process dispatch + `--claude-write-approved` (unit/CLI only; no live Claude)
+- [x] **A2b-1** Provider kind + in-process dispatch + `--claude-write-approved` (unit/CLI only; no live Claude)
 - [ ] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe
 - [ ] **A2b-3** Delete `claude-proxy` command + managed-proxy flags/path; align login gate to flag
 - [ ] **A2b-4** **GATED** live verification (numbered Claude write): in-process pong, no :8787, oat=0, tools=0
 - [ ] **A2b-5** Draft A2c tool-bridging SPEC only (Lean starting point); no implementation
+
+**A2b-1 done (2026-08-31):**
+- `BackendProviderKind::ClaudeCliSubscription` wired through owned-loop / oneshot / openai_wire / completion_factory / CLI preset
+- `crates/gents/src/claude_subscription.rs` Completer client + process seat (`--claude-config-dir`, refuse-closed `--claude-write-approved`, fake completer bypass)
+- Fake-only tests green: `claude_subscription` (4) + CLI parse/seat install (5)
+- No live Claude; proxy still present until A2b-3
 
 **Not in A2b:** tool bridging, oat storage, desktop UI, keeping HTTP proxy for debug.
 

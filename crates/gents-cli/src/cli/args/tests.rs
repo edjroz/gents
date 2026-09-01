@@ -891,5 +891,27 @@ fn server_parses_claude_proxy_flags() {
     );
     assert_eq!(args.claude_model, "claude-opus-5");
     assert_eq!(args.claude_proxy_host, "127.0.0.1");
+    assert!(!args.claude_write_approved);
+}
+
+#[test]
+fn server_parses_a2b_claude_seat_flags_without_proxy() {
+    let args = parse_server(&[
+        "--claude-config-dir",
+        "/tmp/claude-config",
+        "--claude-write-approved",
+        "--claude-fake-completer",
+        "/tmp/fake-completer.sh",
+    ]);
+    assert!(!args.claude_proxy);
+    assert!(args.claude_write_approved);
+    assert_eq!(
+        args.claude_config_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-config"))
+    );
+    assert_eq!(
+        args.claude_fake_completer.as_deref(),
+        Some(std::path::Path::new("/tmp/fake-completer.sh"))
+    );
 }
 
