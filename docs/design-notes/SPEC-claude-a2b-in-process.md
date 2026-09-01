@@ -1,207 +1,258 @@
-# SPEC: Claude A2b — in-process completer (draft)
+# SPEC: Claude A2b — first-class in-process provider
 
 **Date:** 2026-09-01  
-**Status:** Draft for human review — **do not implement until open questions lock**  
+**Status:** Locked for implementation (human decisions 2026-09-01)  
 **Parent:** [`claude-subscription-spike.md`](./claude-subscription-spike.md)  
 **Depends on:** A2a complete (`SPEC-claude-a2a-unified-suite.md`)  
-**Local handoff (not in git):** `.scratch/claude-spike/handoff/` (extend or add `claude-a2b-handoff.md` after locks)
+**Follow-on:** A2c tool bridging (separate SPEC after A2b green)  
+**Branch:** continue on `spike/claude-subscription-plan`  
+**Local handoff (not in git):** `.scratch/claude-spike/handoff/claude-a2b-handoff.md`
 
 ## Problem
 
-A2a hit the operator success bar:
+A2a hit the operator success bar, but Claude is still a fake OpenAI endpoint:
 
 ```text
-gents server   # DefraDB + Codex shim + managed Claude proxy (HTTP loopback)
-gents codex --remote ws://127.0.0.1:9292/
+owned loop → OpenAiCompatible HTTP → managed claude-proxy :8787 → Claude CLI
 ```
 
-But Claude still travels through an extra hop:
-
-```text
-owned loop → OpenAiCompatible ChatCompletions HTTP → claude-proxy → Claude CLI
-```
-
-That hop is useful for isolation and debug, and it is also:
-
-- another failure domain (bind/port/healthz)
-- duplicate request shaping (HTTP SSE ↔ CLI stream-json)
-- a permanent “server babysits a fake OpenAI server” tax
+Claude is a different provider. Modeling it as `OpenAiCompatible` was a spike convenience, not the destination.
 
 ## Goal
 
 ```text
-owned loop / completion factory
-  └─ Claude CLI completer directly (Path A seat in --config-dir)
+owned loop
+  ├─ XaiGrokOAuth        → Grok OAuth client
+  ├─ OpenAiCompatible    → OpenAI HTTP client
+  └─ ClaudeCliSubscription → claude_completer (CLI seat in --config-dir)
 ```
 
-Operator surface stays one command. `/model` still shows Grok + Claude. Claude remains subscription-backed, oat-free, text-only, write-gated.
+Operator surface:
 
-**Rule of thumb:** A2a = “server babysits the proxy.” A2b = “server *is* the proxy.”
+```bash
+./target/debug/gents server \
+  --claude-config-dir "$CLAUDE_CONFIG_DIR" \
+  --claude-write-approved   # only after numbered human write approval
+```
 
-## Non-goals (unless explicitly unlocked)
+No `:8787` proxy process. Codex `/model` still lists Grok + Claude. Claude remains subscription-backed and oat-free.
 
-- Claude↔gents tool bridging / MCP passthrough
+**Rule of thumb:** A2a = “server babysits the proxy.” A2b = “Claude is a real provider.”
+
+## Locked decisions (A2b-0)
+
+| # | Decision | Lock |
+|---|---|---|
+| 1–2 | Provider seam | **B2** — new `BackendProviderKind` (working name `ClaudeCliSubscription`). Rejected B1 short-circuit and B3 two-step. |
+| 3 | Server flag | **`--claude-config-dir`** is the enablement surface. Remove `--claude-proxy` / host / port after cutover. |
+| 4 | Standalone proxy | **Delete** `gents claude-proxy` and managed-proxy path once A2b green. |
+| 5 | Tools | **A2b stays text-only.** Tool bridging that mirrors OpenAI/Grok is **A2c** after A2b provider path works. |
+| 6 | Write gate | **CLI/server flag**, refuse-closed by default: `--claude-write-approved`. Drop env double-gate (`PROXY_USE_CLAUDE` / `CLAUDE_WRITE_APPROVED`) from the normal path. Numbered human approval still required before setting the flag for live calls. |
+| 7 | Branch | Forge on `spike/claude-subscription-plan` (no A2a merge gate). |
+
+### Naming
+
+Prefer `ClaudeCliSubscription` (or `ClaudeMaxCli` if shorter wins in review). Must serialize as a stable `provider_kind` string on `InferenceBackend`. Not an oat/OAuthCredential provider — `is_agent_scoped_oauth()` stays **false** for Claude.
+
+### Why B2 (not B1)
+
+- Claude auth, transport, and failure modes differ from OpenAI HTTP.
+- Grok already has a first-class kind (`XaiGrokOAuth`); Claude should match that honesty.
+- Fake `endpoint=http://127.0.0.1:8787/v1` was scaffolding.
+
+## Non-goals for A2b
+
+- Claude↔gents tool bridging / MCP passthrough (**A2c**)
 - Harvesting `sk-ant-oat01` or storing Claude tokens in `OAuthCredential`
 - Desktop UI
 - Cross-home model federation
-- Replacing Grok / Codex provider paths
-- Removing standalone `gents claude-proxy` in the first A2b slice (debug retention preferred)
+- Changing Grok / Codex provider paths
+- Keeping the HTTP proxy “for debug” after cutover (explicitly deleted)
 
-## Locked carry-forwards from Path A / A2a
+## Carry-forwards
 
-| # | Contract | Carry? |
+| # | Contract | A2b |
 |---|---|---|
-| 1 | Seat lives in explicit `--config-dir` / `CLAUDE_CONFIG_DIR` | Yes |
-| 2 | No Claude `OAuthCredential` / oat in DefraDB | Yes |
-| 3 | Text-only: `--tools ""` + fail closed on `tool_use` | Yes (until later milestone) |
-| 4 | Numbered Claude write gate for billable calls | Yes |
-| 5 | Forbid `claude --bare`; strip `ANTHROPIC_*` in child env | Yes |
-| 6 | Full Claude model IDs only (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`) | Yes |
-| 7 | Prod home unification (`~/.gents`) | Yes |
-| 8 | Prefer `./target/debug/gents` during spike/branch work | Yes |
+| 1 | Seat in explicit `--config-dir` | Yes — via `--claude-config-dir` |
+| 2 | No Claude oat / `OAuthCredential` | Yes |
+| 3 | Text-only CLI (`--tools ""`, fail closed on `tool_use`) | Yes for A2b |
+| 4 | Numbered human write approval before live Claude | Yes |
+| 5 | No `claude --bare`; strip `ANTHROPIC_*` in child | Yes |
+| 6 | Full Claude model IDs only | Yes |
+| 7 | Prod `~/.gents` unification | Yes |
+| 8 | Prefer `./target/debug/gents` | Yes |
 
-## Architecture options (open — pick one in A2b-0)
+## Architecture
 
-### Option B1 — Keep `OpenAiCompatible`, short-circuit loopback
+### Runtime dispatch
 
-Keep the Claude backend as `OpenAiCompatible` + Chat Completions pointing at `http://127.0.0.1:8787/v1`, but when `gents server --claude-proxy` (or a new flag) is on, the completion factory / HTTP client detects the managed local Claude endpoint and calls `claude_completer` directly instead of opening a socket.
-
-```text
-InferenceBackend (OpenAiCompatible → 127.0.0.1:8787/v1)
-        │
-        ├─ A2a today: real HTTP to managed proxy
-        └─ A2b B1: short-circuit to in-process completer
-```
-
-**Pros:** no GraphQL/schema/`BackendProviderKind` change; existing Codex `/model` catalog unchanged; smallest doc/migration blast radius.  
-**Cons:** endpoint URL becomes a lie/marker; healthz/proxy process semantics get weird; hidden special-case in the OpenAI path.
-
-### Option B2 — New `BackendProviderKind` (first-class Claude subscription)
-
-Add something like `ClaudeCliSubscription` / `AnthropicClaudeSubscription` that the completion factory maps straight to the Rust completer. Backend doc stores `config_dir`, model catalog, and gate-related settings instead of a fake OpenAI endpoint.
+Extend `BackendProviderKind` and the match in `agent/runtime/context.rs`:
 
 ```text
-InferenceBackend (ClaudeCliSubscription, config_dir=…)
-        └─ completion_factory → claude_completer::run(...)
+OpenAiCompatible / OpenRouter / ChatGptCodex → existing HTTP / OAuth clients
+XaiGrokOAuth                                 → Grok client
+ClaudeCliSubscription                        → in-process claude_completer
 ```
 
-**Pros:** honest model; clean operator mental model; room for future Claude-specific fields.  
-**Cons:** GraphQL/schema + possibly Lean/provider-input surface; migration from A2a OpenAiCompatible backend docs; larger review.
+Completer already knows how to build argv/env, force `--tools ""`, parse stream-json, and fail closed on `tool_use`. A2b wires that into the owned-loop completion seam instead of HTTP.
 
-### Option B3 — Hybrid: new kind later, B1 now
+### Backend document shape
 
-Ship B1 as an internal optimization behind the existing managed-proxy flag, keep standalone proxy for debug, and only open B2 after real use proves the in-process path.
+Prod Claude `InferenceBackend` migrates from:
 
-**Pros:** fastest path to “no HTTP child in the hot path.”  
-**Cons:** two-step architecture; risk of B1 becoming permanent debt.
+```text
+provider_kind: OpenAiCompatible
+endpoint:      http://127.0.0.1:8787/v1
+openai_wire_api: ChatCompletions
+models: [claude-opus-5, claude-sonnet-5, claude-haiku-4-5-20251001, claude-fable-5]
+```
 
-**Draft recommendation:** **B3 (B1 first, B2 later)** unless you want schema honesty immediately — then **B2**.
+to:
 
-## Proposed component map (after locks)
+```text
+provider_kind: ClaudeCliSubscription
+endpoint:      null / unused (or reserved for future native Anthropic HTTP — not required)
+openai_wire_api: null / unused
+models: same full IDs
+# seat path comes from server --claude-config-dir (process-local), not DefraDB secrets
+```
 
-| Piece | Role in A2b |
-|---|---|
-| `crates/gents/src/claude_completer/` | Shared CLI argv/env/parse/fail-closed (already exists) |
-| `completion_factory` / owned loop seam | Dispatch Claude backends to completer (B1 short-circuit or B2 kind) |
-| `gents server --claude-proxy` | Either becomes no-op/health shim, or is replaced by `--claude-config-dir` only |
-| `gents claude-proxy` | Keep for debug / external clients (recommended) |
-| `gents claude-login` / `claude-auth-probe` | Unchanged Path A seat tooling |
-| Prod `InferenceBackend` Claude row | Migrated or reinterpreted per B1/B2 |
+No Claude tokens in DefraDB. Config dir is process/operator state, like today’s proxy seat.
 
-## Commands (expected)
+### Server flags
 
 ```bash
-# Build / focused tests (wasm skips as today)
-GENTS_SKIP_LENS_BUILD=1 GENTS_SKIP_CALLBACK_WASM_BUILD=1 \
-  cargo test -p gents claude_completer --lib
-GENTS_SKIP_LENS_BUILD=1 GENTS_SKIP_CALLBACK_WASM_BUILD=1 \
-  cargo test -p gents-cli --lib claude_proxy managed_claude_proxy
-
-# Auth still Path A
-./target/debug/gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"
-./target/debug/gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
-
-# Server (exact flags TBD by B1/B2 lock)
-./target/debug/gents server \
-  --claude-config-dir "$CLAUDE_CONFIG_DIR" \
-  # B1 may still accept --claude-proxy as compatibility alias
-  # Live Claude still requires write gate env
+gents server \
+  --claude-config-dir <dir> \      # enables Claude provider seat for this process
+  --claude-write-approved \        # refuse-closed without this; billable spawn allowed with it
+  [--claude-bin <path>] \
+  [--claude-workdir <dir>] \
+  [--claude-log-dir <dir>]
 ```
+
+Remove after cutover:
+- `--claude-proxy`
+- `--claude-proxy-host` / `--claude-proxy-port`
+- `gents claude-proxy` command
+- `PROXY_USE_CLAUDE` requirement
+
+Keep:
+- `gents claude-login --config-dir … --claude-write-approved` (flag, not env)
+- `gents claude-auth-probe --config-dir …`
+
+### Lean / schema impact (foundation-flow checkpoint)
+
+Evidence today:
+- GraphQL `InferenceBackend.provider_kind` is a **String**, not a closed enum.
+- Lean `SelfConfig` lists `provider_kind` as a field name only; it does not enumerate provider kinds.
+- Adding `ClaudeCliSubscription` is primarily a **Rust provider-dispatch** change.
+
+**A2b rule:** treat provider-kind addition as plumbing unless we change provider-input assembly, legal request transitions, or transcript→provider sanitization. Those stay unchanged while Claude is text-only.
+
+**A2c** (tool bridging) *does* change what the model feeds the provider / tool loop and must start from Lean provider-input + tool-call lifecycles before Rust.
+
+If implementation discovers a Lean obligation (e.g. sampling validation per provider), stop and do the Lean→conformance→Rust pass explicitly.
+
+## A2c preview (not in A2b scope)
+
+After A2b green, tool bridging should make Claude mirror OpenAI/Grok inside the owned loop:
+
+1. Resolve behavior tool surface (same as today).
+2. Expose tools to Claude CLI in whatever protocol the CLI supports (or a future native API).
+3. Map Claude `tool_use` → gents `AgentToolCall`.
+4. Execute tools in gents; feed results back into the next Claude turn.
+5. Keep fail-closed / audit semantics consistent with existing tool-call lifecycle.
+
+That needs its own SPEC and Lean starting point. Do not sneak it into A2b.
 
 ## Testing strategy
 
-- Unit: completer argv/env/parse fixtures (already green) remain the source of truth.
-- Unit: completion-factory / short-circuit / new-kind dispatch with fake completer (no network).
-- CLI: server startup without binding `:8787` when in-process path is selected (B1/B2 dependent).
-- Regression: standalone `gents claude-proxy` canned/fake paths still pass.
-- Gated live: one numbered Claude write proving owned-loop text pong with **no listener on the old proxy port** (or proxy only if explicitly kept for debug).
-- Document harvest: `OAuthCredential` Claude count = 0; `AgentToolCall` = 0 on Claude turns.
+- Unit: `BackendProviderKind` parse/display for Claude kind.
+- Unit: runtime/completion dispatch to completer with fake completer (no network, no CLI).
+- Unit: refuse-closed without `--claude-write-approved`; allow with flag.
+- Unit: existing claude_completer fixtures remain green (text-only / tool_use fail-closed).
+- CLI: `server` accepts `--claude-config-dir` without `--claude-proxy`; rejects live Claude without write flag.
+- Migration: prod/spike recipe updates Claude backend `provider_kind`.
+- Deletion: `gents claude-proxy` removed; managed-proxy tests removed or replaced.
+- Gated live: numbered write approval → server with `--claude-config-dir` + `--claude-write-approved` → Codex/chat Claude pong → no listener required on `:8787` → `OAuthCredential` Claude=0 → `AgentToolCall=0`.
+
+## Success criteria
+
+- [ ] `BackendProviderKind::ClaudeCliSubscription` (final name) exists and dispatches in-process
+- [ ] Prod Claude backend no longer depends on OpenAiCompatible/`http://127.0.0.1:8787`
+- [ ] `gents server --claude-config-dir …` enables seat; no managed proxy task
+- [ ] Live Claude requires `--claude-write-approved` (flag), refuse-closed otherwise
+- [ ] Standalone `gents claude-proxy` and `--claude-proxy*` flags deleted
+- [ ] Codex `/model` still lists Grok + Claude full IDs
+- [ ] Text-only Path A contracts hold; tools deferred to A2c
+- [ ] Docs (`backends.md`, spike notes) updated
+- [ ] Focused tests green; one gated live smoke filed
+
+## Tasks
+
+### A2b-0 Locks — DONE
+
+Human locks recorded above.
+
+### A2b-1 Provider kind + refuse-closed dispatch (no live Claude)
+
+- Add `ClaudeCliSubscription` to `BackendProviderKind` (parse/display/tests).
+- Wire runtime/completion path to `claude_completer` with injectable/fake command.
+- Implement `--claude-write-approved` refuse-closed gate at the spawn boundary.
+- Server: `--claude-config-dir` enables Claude seat without starting HTTP proxy.
+- Keep old proxy path temporarily behind tests until A2b-3 deletion, or feature-flag removal in same PR if safer.
+
+**Verify:** unit/CLI tests only; no billable Claude.
+
+### A2b-2 Migrate backend docs + operator recipe
+
+- Update prod Claude `InferenceBackend` to new `provider_kind`.
+- Update `docs/backends.md` and spike notes.
+- Ensure Codex `/model` projection still works from `models[]`.
+
+**Verify:** GraphQL shows new kind; `/model` lists four Claude IDs + Grok.
+
+### A2b-3 Delete proxy scaffolding
+
+- Remove `gents claude-proxy` command, managed proxy in `serve.rs`, host/port flags, proxy-only tests.
+- Remove `PROXY_USE_CLAUDE` from normal operator path.
+- Align `claude-login` write gate to `--claude-write-approved` flag.
+
+**Verify:** `cargo test` focused suites; `gents --help` no longer shows `claude-proxy`.
+
+### A2b-4 GATED live verification
+
+Requires numbered Claude write approval:
+
+- Start server with `--claude-config-dir` + `--claude-write-approved`.
+- Claude text pong via chat and/or Codex.
+- Confirm no dependency on `:8787`.
+- Harvest: Claude `OAuthCredential=0`, `AgentToolCall=0`.
+- File evidence under `.scratch/claude-spike/logs/`.
+
+### A2b-5 Open A2c SPEC (docs only)
+
+Draft tool-bridging SPEC from Lean provider-input + tool-call lifecycles; no implementation.
 
 ## Boundaries
 
 **Always**
-- Keep write gate for billable Claude.
-- Keep text-only / fail-closed on `tool_use` until a later milestone explicitly unlocks tools.
-- Prefer focused tests + Herdr for long cargo builds.
-- Update `docs/backends.md` when operator recipe changes.
+- Numbered human approval before any live Claude write.
+- Prefer focused tests; use Herdr for long cargo builds.
+- Foundation flow: if provider-input/tool legality changes, start in Lean.
 
 **Ask first**
-- New `BackendProviderKind` / GraphQL schema / Lean changes.
-- Removing managed-proxy flags or standalone `claude-proxy`.
-- Changing prod default behavior model.
-- Enabling Claude tool bridging.
+- Final provider kind string if rename from `ClaudeCliSubscription`.
 - Any oat / `OAuthCredential` design.
+- Starting A2c implementation.
+- Changing prod default behavior model.
 
 **Never**
-- Silent Claude calls without numbered approval.
+- Silent billable Claude without approval + write flag.
 - `claude --bare`.
-- Writing Claude tokens into DefraDB in A2b.
-- Touching Lean request lifecycle just to fold the HTTP hop.
-
-## Success criteria
-
-- [ ] Claude completions no longer require a live HTTP proxy process for the normal prod path
-- [ ] Prod Codex `/model` still lists Grok + Claude full IDs
-- [ ] Owned-loop / Codex text-only Claude turn succeeds under write gate
-- [ ] `OAuthCredential` for Claude remains 0
-- [ ] Tool bridging still disabled; `tool_use` fails closed
-- [ ] Standalone `gents claude-proxy` still works for debug **or** explicit decision documents its removal
-- [ ] Docs/recipe updated; A2a marked historical relative to A2b
-- [ ] Focused unit/CLI tests green; one gated live smoke filed
-
-## Tasks (skeleton — expand only after A2b-0)
-
-### A2b-0 Lock architecture
-
-Human answers the open questions below. No code.
-
-### A2b-1 Completer dispatch seam
-
-Wire completion path to call `claude_completer` for the chosen option (B1/B2/B3). Fake-completer tests only.
-
-### A2b-2 Server flag / lifecycle cleanup
-
-Stop requiring a real `:8787` accept loop for the happy path; preserve debug proxy as decided.
-
-### A2b-3 Backend doc / operator migration
-
-Update prod recipe + `docs/backends.md`. If B2: migrate Claude `InferenceBackend` docs.
-
-### A2b-4 GATED live verification
-
-Numbered Claude write: in-process pong + oat=0 + tools stripped + no unexpected proxy dependency.
-
-## Open questions — need human locks
-
-1. **Provider seam:** B1 short-circuit, B2 new kind, or B3 (B1 now / B2 later)?  
-   Draft lean: **B3**.
-2. **Schema/Lean:** if B2, is a GraphQL/`BackendProviderKind` change acceptable in this branch, or does it need a separate PR after merge of A2a?
-3. **Managed proxy flags:** keep `--claude-proxy` as alias, replace with `--claude-config-dir` only, or keep real HTTP child forever for debug while adding in-process hot path?
-4. **Standalone `gents claude-proxy`:** keep indefinitely, deprecate, or delete after A2b green?
-5. **Tools policy:** remain text-only for all of A2b, or allow a follow-on A2c for tool bridging?
-6. **Write gate UX:** keep env double-gate only, or add an explicit server flag that still defaults refuse-closed?
-7. **Merge sequencing:** merge/review A2a to main before A2b implementation, or continue on `spike/claude-subscription-plan`?
+- Writing Claude tokens into DefraDB.
+- Shipping tool bridging inside A2b by stealth.
 
 ## Exit
 
-A2b is done when the normal prod Claude path is in-process (no required HTTP child), Path A safety contracts still hold, and docs tell operators the new recipe. Further work (tool bridging, native Anthropic Messages, desktop) needs a new SPEC.
+A2b is done when Claude is a first-class in-process provider on the spike branch, the HTTP proxy is gone, write gating is a refuse-closed flag, and docs match. Tool parity with OpenAI/Grok is A2c.

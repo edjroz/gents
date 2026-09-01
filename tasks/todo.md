@@ -699,15 +699,25 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 
 ---
 
-## A2b in-process Claude completer (next stage — SPEC draft)
+## A2b first-class in-process Claude provider (locked 2026-09-01)
 
 **SPEC:** `docs/design-notes/SPEC-claude-a2b-in-process.md`  
-**Status:** Draft for human review. **Do not implement until SPEC approved.**
+**Status:** Locks accepted. Implementation may start at A2b-1.
 
-Goal: remove the loopback HTTP child so the owned loop / server calls the Claude CLI completer directly while keeping Path A contracts (seat in `--config-dir`, no oat, text-only, write gate).
+### Locks
+- **B2** new `BackendProviderKind` (working name `ClaudeCliSubscription`) — Claude is a different provider
+- Server enablement: `--claude-config-dir` (not `--claude-proxy`)
+- Delete standalone `gents claude-proxy` after cutover
+- **Text-only in A2b**; tool bridging that mirrors OpenAI/Grok = **A2c** after A2b
+- Write gate: refuse-closed **`--claude-write-approved` flag** (drop env double-gate from normal path)
+- Continue on `spike/claude-subscription-plan`
 
-- [ ] **A2b-0** Human review/lock A2b SPEC open questions (provider seam, schema/Lean, proxy retention, tools policy)
-- [ ] **A2b-1** … (tasks expand only after A2b-0)
+- [x] **A2b-0** Lock architecture / write-gate / deletion / tools split
+- [ ] **A2b-1** Provider kind + in-process dispatch + `--claude-write-approved` (unit/CLI only; no live Claude)
+- [ ] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe
+- [ ] **A2b-3** Delete `claude-proxy` command + managed-proxy flags/path; align login gate to flag
+- [ ] **A2b-4** **GATED** live verification (numbered Claude write): in-process pong, no :8787, oat=0, tools=0
+- [ ] **A2b-5** Draft A2c tool-bridging SPEC only (Lean starting point); no implementation
 
-**Not doing until A2b SPEC locks:** new `BackendProviderKind`, GraphQL/Lean changes, Claude tool bridging, oat storage, desktop UI.
+**Not in A2b:** tool bridging, oat storage, desktop UI, keeping HTTP proxy for debug.
 

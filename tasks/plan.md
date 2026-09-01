@@ -129,12 +129,18 @@ Locked:
 - [ ] Optional: backfill formal A2a-4 evidence note under `.scratch/`
 - [ ] Optional: human merge/review of A2a slice
 
-## Next: A2b in-process Claude completer (SPEC draft)
+## Next: A2b first-class in-process Claude provider (LOCKED)
 
 SPEC: `docs/design-notes/SPEC-claude-a2b-in-process.md`
 
-A2b removes the HTTP loopback child so gents calls the Claude CLI completer
-directly. **No implementation until the SPEC's open questions are locked.**
+Locks (2026-09-01):
+- B2 new provider kind (`ClaudeCliSubscription` working name)
+- `--claude-config-dir` + `--claude-write-approved` (flag, refuse-closed)
+- Delete `gents claude-proxy` after cutover
+- Text-only now; tool mirroring of OpenAI/Grok deferred to A2c
+- Stay on `spike/claude-subscription-plan`
+
+Immediate work: **A2b-1** provider kind + dispatch + write-flag (no live Claude).
 
 ### Checkpoint: Path A packaged
 - [x] Fixture fail-closed in-tree
