@@ -231,7 +231,7 @@ pub async fn probe_backends_cycle(
     let mut probed_ids = HashSet::new();
 
     for backend in backends {
-        if backend.provider_kind.is_agent_scoped_oauth() {
+        if backend.provider_kind.skips_fleet_http_probe() {
             continue;
         }
         probed_ids.insert(backend.backend_id.clone());
@@ -627,6 +627,29 @@ mod tests {
         assert!(outcome.flipped.is_empty());
         assert!(health_map.get("codex").await.is_none(), "no measured entry");
         assert!(!health_map.measured_blocks_routing("codex").await);
+    }
+
+    #[tokio::test]
+    async fn cycle_never_probes_or_demotes_claude_cli_subscription_backends() {
+        let options = probe_options();
+        let client = reqwest::Client::new();
+        let health_map = BackendHealthMap::new();
+
+        // Placeholder endpoint is not HTTP-probeable; Claude seat is process-local.
+        let mut claude = backend(
+            "claude",
+            crate::claude_subscription::DEFAULT_BACKEND_ENDPOINT.to_string(),
+            "healthy",
+        );
+        claude.provider_kind = crate::backend_provider::BackendProviderKind::ClaudeCliSubscription;
+        let outcome =
+            probe_backends_cycle(&client, &[claude], Utc::now(), &health_map, &options).await;
+        assert!(outcome.flipped.is_empty());
+        assert!(
+            health_map.get("claude").await.is_none(),
+            "no measured entry for ClaudeCliSubscription"
+        );
+        assert!(!health_map.measured_blocks_routing("claude").await);
     }
 
     #[tokio::test]

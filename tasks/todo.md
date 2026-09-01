@@ -714,7 +714,8 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 
 - [x] **A2b-0** Lock architecture / write-gate / deletion / tools split
 - [x] **A2b-1** Provider kind + in-process dispatch + `--claude-write-approved` (unit/CLI only; no live Claude)
-- [ ] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe
+- [ ] **Interjection (before A2b-2):** Grok SSE / system-failure retry — `session fork` at last complete human user turn; strip `id: null` reasoning at the provider boundary so a dropped stream cannot brick the next turn. Fork retries the user prompt; it does **not** resume the tool loop. Report: `.scratch/claude-spike/handoff/grok-sse-drop-report.md`
+- [ ] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe (dirty: `skips_fleet_http_probe`; unfinished: `backend set` must clear `openai_wire_api`)
 - [ ] **A2b-3** Delete `claude-proxy` command + managed-proxy flags/path; align login gate to flag
 - [ ] **A2b-4** **GATED** live verification (numbered Claude write): in-process pong, no :8787, oat=0, tools=0
 - [ ] **A2b-5** Draft A2c tool-bridging SPEC only (Lean starting point); no implementation

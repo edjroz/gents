@@ -210,6 +210,7 @@ Human locks recorded above.
 - Update prod Claude `InferenceBackend` to new `provider_kind`.
 - Update `docs/backends.md` and spike notes.
 - Ensure Codex `/model` projection still works from `models[]`.
+- Skip fleet HTTP probes for `ClaudeCliSubscription` (placeholder endpoint is not `/models`).
 
 **Verify:** GraphQL shows new kind; `/model` lists four Claude IDs + Grok.
 

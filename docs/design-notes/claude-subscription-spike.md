@@ -8,9 +8,11 @@ gents owns the loop + documents; the vendor CLI is only a billed completer).
 **Status:** Phases 0–5 complete; Phase 5 verdict **Go** (2026-08-30). Phase 6
 Path A packaging is **complete** under write request #4. A2a unified prod suite
 (managed Claude proxy under `gents server`) is **complete** (human-confirmed
-2026-09-01). **A2b** first-class in-process Claude provider is **locked** and
-ready to implement:
-[`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md). Tool bridging
+2026-09-01). **A2b** first-class in-process Claude provider is **in progress**
+on `spike/claude-subscription-plan`: A2b-0/A2b-1 done; A2b-2 migrates backends
+off `OpenAiCompatible`/`:8787` onto `ClaudeCliSubscription` +
+`claude-cli://subscription` (see
+[`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md)). Tool bridging
 that mirrors OpenAI/Grok is **A2c** after A2b. A2b itself is provider-dispatch
 plumbing (text-only); A2c must start in Lean.
 
@@ -50,7 +52,7 @@ Opportunistic “just one quick test” is forbidden.
 | 3 | Artifact root | Worktree-local **`.scratch/claude-spike/`** (gitignored). Prod `~/.gents` / prod Claude home untouched. |
 | 4 | Phase 6 packaging | **Unlocked by Phase 5 Go.** Path A only for v1: CLI-login + loopback completer; **no oat / no `OAuthCredential`**. See `SPEC-claude-phase6-packaging.md`. |
 | 5 | Billing gate placement | **Phase 5** (after gents-shaped traffic exists). Not a Phase 0/1 blocker. |
-| 6 | Provider shape | Stock **`OpenAiCompatible` + `ChatCompletions`** + dummy API key → loopback proxy. No native Anthropic crate in this spike. |
+| 6 | Provider shape | **A2b:** `ClaudeCliSubscription` + process seat (`--claude-config-dir`); placeholder endpoint `claude-cli://subscription`. Historical Path A used stock `OpenAiCompatible` + Chat Completions + dummy API key → loopback proxy. |
 | 7 | Completer-only enforcement | Claude Code **2.1.x**: `--tools ""` + reject stdout `tool_use`. Do **not** use `--bare` (forces API-key auth). |
 
 ## Capability map / phases
@@ -88,7 +90,7 @@ Build order is strict: each phase’s exit criteria unlock the next.
 | [`SPEC-claude-phase5-billing-confirmation.md`](./SPEC-claude-phase5-billing-confirmation.md) | 5 |
 | [`SPEC-claude-phase6-packaging.md`](./SPEC-claude-phase6-packaging.md) | 6 (Path A) |
 | [`SPEC-claude-a2a-unified-suite.md`](./SPEC-claude-a2a-unified-suite.md) | A2a (complete) |
-| [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md) | A2b (locked) |
+| [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md) | A2b (in progress; A2b-0/1 done) |
 
 ## Spike-level success / fail
 

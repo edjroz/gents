@@ -109,6 +109,14 @@ impl BackendProviderKind {
     pub fn is_agent_scoped_oauth(self) -> bool {
         matches!(self, Self::ChatGptCodex | Self::XaiGrokOAuth)
     }
+
+    /// Backends that must not be fleet HTTP-probed.
+    ///
+    /// Includes agent-scoped OAuth providers and Claude CLI subscription seats
+    /// (process-local `--claude-config-dir`, no HTTP `/models` endpoint).
+    pub fn skips_fleet_http_probe(self) -> bool {
+        self.is_agent_scoped_oauth() || matches!(self, Self::ClaudeCliSubscription)
+    }
 }
 
 impl std::fmt::Display for BackendProviderKind {

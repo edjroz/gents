@@ -486,5 +486,8 @@ mod tests {
             "ClaudeCliSubscription"
         );
         assert!(!crate::BackendProviderKind::ClaudeCliSubscription.is_agent_scoped_oauth());
+        assert!(crate::BackendProviderKind::ClaudeCliSubscription.skips_fleet_http_probe());
+        assert!(crate::BackendProviderKind::ChatGptCodex.skips_fleet_http_probe());
+        assert!(!crate::BackendProviderKind::OpenAiCompatible.skips_fleet_http_probe());
     }
 }
