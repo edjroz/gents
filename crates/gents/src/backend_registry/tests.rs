@@ -244,3 +244,43 @@ fn resolved_api_key_none_when_unset() {
     let backend = backend_with_keys(None, Some("BACKEND_REGISTRY_TEST_KEY_MISSING"));
     assert_eq!(backend.resolved_api_key(), None);
 }
+
+#[test]
+fn collect_backend_records_skips_unknown_provider_kind() {
+    let rows = vec![
+        serde_json::json!({
+            "_docID": "doc-good",
+            "backend_id": "good",
+            "name": "Good",
+            "provider_kind": "OpenAiCompatible",
+            "endpoint": "http://localhost:8000/v1",
+            "max_concurrent": 1,
+            "enabled": true,
+            "probe_status": "healthy",
+        }),
+        serde_json::json!({
+            "_docID": "doc-bad",
+            "backend_id": "legacy-claude-proxy",
+            "name": "Legacy",
+            "provider_kind": "NotARealProvider",
+            "endpoint": "http://127.0.0.1:8787/v1",
+            "max_concurrent": 1,
+            "enabled": true,
+            "probe_status": "healthy",
+        }),
+        serde_json::json!({
+            "backend_id": "missing-doc-id",
+            "name": "Missing",
+            "provider_kind": "OpenAiCompatible",
+            "endpoint": "http://localhost:8001/v1",
+            "max_concurrent": 1,
+            "enabled": true,
+            "probe_status": "healthy",
+        }),
+    ];
+
+    let backends = collect_backend_records(&rows);
+    assert_eq!(backends.len(), 1);
+    assert_eq!(backends[0].0, "doc-good");
+    assert_eq!(backends[0].1.backend_id, "good");
+}

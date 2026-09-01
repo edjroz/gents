@@ -245,25 +245,47 @@ pub(crate) async fn list_backend_records(
         .as_ref()
         .and_then(|d| d.get("InferenceBackend"))
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|row| {
-                    Ok::<_, anyhow::Error>((
-                        row.get("_docID")
-                            .and_then(|value| value.as_str())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("InferenceBackend row is missing _docID")
-                            })?
-                            .to_string(),
-                        InferenceBackend::from_value(row)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?
+        .map(|arr| collect_backend_records(arr))
         .unwrap_or_default();
 
     Ok(backends)
+}
+
+fn collect_backend_records(rows: &[serde_json::Value]) -> Vec<(String, InferenceBackend)> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let doc_id = match row.get("_docID").and_then(|value| value.as_str()) {
+            Some(doc_id) => doc_id.to_string(),
+            None => {
+                tracing::warn!(
+                    row = %row,
+                    "skipping InferenceBackend row missing _docID"
+                );
+                continue;
+            }
+        };
+        match InferenceBackend::from_value(row) {
+            Ok(backend) => out.push((doc_id, backend)),
+            Err(error) => {
+                let backend_id = row
+                    .get("backend_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("<missing>");
+                let provider_kind = row
+                    .get("provider_kind")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("<missing>");
+                tracing::warn!(
+                    backend_id = %backend_id,
+                    provider_kind = %provider_kind,
+                    doc_id = %doc_id,
+                    error = %error,
+                    "skipping InferenceBackend with unparseable provider_kind/fields"
+                );
+            }
+        }
+    }
+    out
 }
 
 pub async fn list_all_backends(node: &EmbeddedNode) -> Result<Vec<InferenceBackend>> {

@@ -211,6 +211,8 @@ Human locks recorded above.
 - Update `docs/backends.md` and spike notes.
 - Ensure Codex `/model` projection still works from `models[]`.
 - Skip fleet HTTP probes for `ClaudeCliSubscription` (placeholder endpoint is not `/models`).
+- `config backend set` to `ClaudeCliSubscription` must clear sticky `openai_wire_api`.
+- `list_backend_records` must warn+skip unknown/unparseable `provider_kind` instead of failing the whole list.
 
 **Verify:** GraphQL shows new kind; `/model` lists four Claude IDs + Grok.
 

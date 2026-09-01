@@ -310,6 +310,8 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
      --backend-preset claude-cli-subscription \
      --name "Claude Max CLI subscription"
    # Then set models[] via GraphQL as above; clear openai_wire_api / api_key.
+   # `gents config backend set --backend-preset claude-cli-subscription`
+   # clears sticky openai_wire_api on update.
    ```
 
 3. Start the server with the process seat (no managed HTTP proxy required):
