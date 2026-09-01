@@ -790,12 +790,14 @@ fn claude_login_and_auth_probe_parse_and_require_config_dir() {
         "--dry-run",
         "--email",
         "user@example.com",
+        "--claude-write-approved",
     ])
     .expect("claude-login should parse");
     match login.command {
         Command::ClaudeLogin(args) => {
             assert_eq!(args.config_dir, PathBuf::from("/tmp/claude-cfg"));
             assert!(args.dry_run);
+            assert!(args.claude_write_approved);
             assert_eq!(args.email.as_deref(), Some("user@example.com"));
             assert!(!args.console);
             assert!(!args.sso);
@@ -873,37 +875,18 @@ fn deprecated_path_required_args(path: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn server_parses_claude_proxy_flags() {
-    let args = parse_server(&[
-        "--claude-proxy",
-        "--claude-config-dir",
-        "/tmp/claude-config",
-        "--claude-proxy-port",
-        "8799",
-        "--claude-model",
-        "claude-opus-5",
-    ]);
-    assert!(args.claude_proxy);
-    assert_eq!(args.claude_proxy_port, 8799);
-    assert_eq!(
-        args.claude_config_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/claude-config"))
-    );
-    assert_eq!(args.claude_model, "claude-opus-5");
-    assert_eq!(args.claude_proxy_host, "127.0.0.1");
-    assert!(!args.claude_write_approved);
-}
-
-#[test]
-fn server_parses_a2b_claude_seat_flags_without_proxy() {
+fn server_parses_a2b_claude_seat_flags() {
     let args = parse_server(&[
         "--claude-config-dir",
         "/tmp/claude-config",
         "--claude-write-approved",
         "--claude-fake-completer",
         "/tmp/fake-completer.sh",
+        "--claude-workdir",
+        "/tmp/claude-work",
+        "--claude-log-dir",
+        "/tmp/claude-logs",
     ]);
-    assert!(!args.claude_proxy);
     assert!(args.claude_write_approved);
     assert_eq!(
         args.claude_config_dir.as_deref(),
@@ -912,6 +895,21 @@ fn server_parses_a2b_claude_seat_flags_without_proxy() {
     assert_eq!(
         args.claude_fake_completer.as_deref(),
         Some(std::path::Path::new("/tmp/fake-completer.sh"))
+    );
+    assert_eq!(
+        args.claude_workdir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-work"))
+    );
+    assert_eq!(
+        args.claude_log_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-logs"))
+    );
+
+    let seat_only = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
+    assert!(!seat_only.claude_write_approved);
+    assert_eq!(
+        seat_only.claude_config_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-config"))
     );
 }
 

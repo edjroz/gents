@@ -183,7 +183,7 @@ That needs its own SPEC and Lean starting point. Do not sneak it into A2b.
 - [ ] Prod Claude backend no longer depends on OpenAiCompatible/`http://127.0.0.1:8787`
 - [ ] `gents server --claude-config-dir …` enables seat; no managed proxy task
 - [ ] Live Claude requires `--claude-write-approved` (flag), refuse-closed otherwise
-- [ ] Standalone `gents claude-proxy` and `--claude-proxy*` flags deleted
+- [x] Standalone `gents claude-proxy` and `--claude-proxy*` flags deleted
 - [ ] Codex `/model` still lists Grok + Claude full IDs
 - [ ] Text-only Path A contracts hold; tools deferred to A2c
 - [ ] Docs (`backends.md`, spike notes) updated

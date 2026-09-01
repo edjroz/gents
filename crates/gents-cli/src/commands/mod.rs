@@ -2,7 +2,6 @@ pub(crate) mod background;
 pub(crate) mod chat;
 pub(crate) mod claude_auth_probe;
 pub(crate) mod claude_login;
-pub(crate) mod claude_proxy;
 pub(crate) mod codex;
 pub(crate) mod codex_auth_probe;
 pub(crate) mod codex_login;

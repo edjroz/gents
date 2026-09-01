@@ -3,7 +3,7 @@
 //! Seat credentials stay in `--config-dir` / `CLAUDE_CONFIG_DIR`. This command
 //! never upserts `OAuthCredential` into DefraDB.
 //!
-//! Live Anthropic login is write-gated: require `CLAUDE_WRITE_APPROVED=1`
+//! Live Anthropic login is write-gated: require `--claude-write-approved`
 //! unless `--dry-run` is set.
 
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ pub(crate) async fn claude_login(args: ClaudeLoginArgs) -> Result<()> {
     }
     if !plan.write_approved {
         bail!(
-            "refusing live Claude login: set CLAUDE_WRITE_APPROVED=1 after an explicit numbered write approval, or pass --dry-run"
+            "refusing live Claude login: pass --claude-write-approved after an explicit numbered write approval, or pass --dry-run"
         );
     }
     run_claude_login(&plan)?;
@@ -96,7 +96,7 @@ pub(crate) fn plan_claude_login(args: &ClaudeLoginArgs) -> Result<ClaudeLoginPla
         claude_bin,
         argv,
         dry_run: args.dry_run,
-        write_approved: std::env::var("CLAUDE_WRITE_APPROVED").ok().as_deref() == Some("1"),
+        write_approved: args.claude_write_approved,
     })
 }
 
@@ -112,8 +112,7 @@ fn run_claude_login(plan: &ClaudeLoginPlan) -> Result<()> {
         .stderr(Stdio::inherit())
         .env_clear()
         .envs(sanitize_child_env(std::env::vars_os()))
-        .env("CLAUDE_CONFIG_DIR", &plan.config_dir)
-        .env("CLAUDE_WRITE_APPROVED", "1");
+        .env("CLAUDE_CONFIG_DIR", &plan.config_dir);
     for key in gents::claude_completer::STRIPPED_ENV_VARS {
         cmd.env_remove(key);
     }
@@ -151,6 +150,7 @@ mod tests {
             config_dir: PathBuf::from("/tmp/claude-cfg"),
             claude_bin: None,
             dry_run: true,
+            claude_write_approved: false,
             console: false,
             email: None,
             sso: false,
@@ -161,6 +161,7 @@ mod tests {
     fn dry_run_plan_defaults_to_claudeai() {
         let plan = plan_claude_login(&base_args()).expect("plan");
         assert!(plan.dry_run);
+        assert!(!plan.write_approved);
         assert_eq!(
             plan.argv,
             vec![
@@ -173,6 +174,16 @@ mod tests {
         let json = claude_login_plan_json(&plan);
         assert_eq!(json["oauth_credential_written"], false);
         assert_eq!(json["credential_store"], "claude_config_dir");
+    }
+
+    #[test]
+    fn write_approved_flag_is_recorded_on_plan() {
+        let mut args = base_args();
+        args.dry_run = false;
+        args.claude_write_approved = true;
+        let plan = plan_claude_login(&args).expect("plan");
+        assert!(plan.write_approved);
+        assert!(!plan.dry_run);
     }
 
     #[test]

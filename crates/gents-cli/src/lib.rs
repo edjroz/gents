@@ -451,7 +451,6 @@ async fn async_main() -> Result<()> {
         Command::ClaudeAuthProbe(args) => {
             commands::claude_auth_probe::claude_auth_probe(args).await
         }
-        Command::ClaudeProxy(args) => commands::claude_proxy::claude_proxy(args).await,
         Command::P2p { command } => commands::p2p::dispatch(command).await,
         Command::Schema { command } => commands::schema::dispatch(command).await,
         Command::Show { command } => commands::show::dispatch(command).await,

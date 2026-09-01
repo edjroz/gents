@@ -3,8 +3,8 @@
 //! Parses Claude Code `--output-format stream-json` JSONL into plain assistant
 //! text and builds a sanitized child-process environment / argv for the CLI.
 //!
-//! This is plumbing for the experimental loopback OpenAI adapter — not a Lean
-//! lifecycle change and not a native Anthropic provider.
+//! A2b uses this from the in-process `ClaudeCliSubscription` Completer. The
+//! transitional HTTP `claude-proxy` adapter was deleted in A2b-3.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -12,7 +12,23 @@ use std::ffi::{OsStr, OsString};
 use serde_json::Value;
 use thiserror::Error;
 
-pub mod proxy;
+/// Default client-facing model slug for ClaudeCliSubscription.
+///
+/// Full Claude model IDs only — not the old invented `claude-plan` seat label.
+pub const DEFAULT_MODEL_ID: &str = "claude-sonnet-5";
+
+/// Official Claude full model IDs for ClaudeCliSubscription backends.
+pub const PATH_A_MODEL_IDS: &[&str] = &[
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+    "claude-fable-5",
+];
+
+/// Live Claude path requires `--claude-write-approved`.
+pub fn live_claude_allowed(write_approved: bool) -> bool {
+    write_approved
+}
 
 /// Environment variable names that must not reach the Claude CLI child.
 ///

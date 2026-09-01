@@ -30,7 +30,7 @@ pub fn default_backend_endpoint() -> &'static str {
 }
 
 pub fn default_model_name() -> &'static str {
-    crate::claude_completer::proxy::DEFAULT_MODEL_ID
+    crate::claude_completer::DEFAULT_MODEL_ID
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +180,7 @@ async fn complete_text(
         return run_fake_completer(fake, &prompt).await;
     }
 
-    if !crate::claude_completer::proxy::live_claude_allowed(seat.write_approved) {
+    if !crate::claude_completer::live_claude_allowed(seat.write_approved) {
         return Err(CompletionError::ProviderError(
             "live Claude path refused: pass --claude-write-approved after an explicit numbered write approval"
                 .to_string(),

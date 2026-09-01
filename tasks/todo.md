@@ -715,8 +715,8 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - [x] **A2b-0** Lock architecture / write-gate / deletion / tools split
 - [x] **A2b-1** Provider kind + in-process dispatch + `--claude-write-approved` (unit/CLI only; no live Claude)
 - [x] **Interjection (before A2b-2):** Grok SSE / system-failure retry — `session fork` at last complete human user turn; strip `id: null` reasoning at the provider boundary so a dropped stream cannot brick the next turn. Fork retries the user prompt; it does **not** resume the tool loop. Report: `.scratch/claude-spike/handoff/grok-sse-drop-report.md`
-- [ ] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe (`skips_fleet_http_probe` done; clear sticky `openai_wire_api` + harden unknown `provider_kind` list in progress)
-- [ ] **A2b-3** Delete `claude-proxy` command + managed-proxy flags/path; align login gate to flag
+- [x] **A2b-2** Migrate Claude `InferenceBackend` off OpenAiCompatible/:8787; update docs/recipe — verified 2026-09-01T21:35Z against live PID `96339` serving `./target/debug/gents` inode `44267548` (mtime Sep 1 17:14). `config backend list/show` → `ClaudeCliSubscription`, endpoint `claude-cli://subscription`, `openai_wire_api: null`. Commits: `665d8494`, `9154f490` (+ interjection `63ff2ff3`/`0b89e688`).
+- [x] **A2b-3** Delete `claude-proxy` command + managed-proxy flags/path; align login gate to flag — verified 2026-09-01T22:15Z. Focused `claude_` unit tests 14/14 (`gents`) + 14/14 (`gents-cli`); rebuilt `./target/debug/gents` inode `44285772` (mtime Sep 1 18:14). `gents --help` has no `claude-proxy`; `gents claude-proxy` exits 2 unrecognized; `claude-login --help` documents refuse-closed `--claude-write-approved`; `server --help` keeps seat flags only (no `--claude-proxy*` / `--claude-model`).
 - [ ] **A2b-4** **GATED** live verification (numbered Claude write): in-process pong, no :8787, oat=0, tools=0
 - [ ] **A2b-5** Draft A2c tool-bridging SPEC only (Lean starting point); no implementation
 
@@ -725,6 +725,24 @@ Claude Max subscription completer. Requires **CLAUDE WRITE REQUEST #5**.
 - `crates/gents/src/claude_subscription.rs` Completer client + process seat (`--claude-config-dir`, refuse-closed `--claude-write-approved`, fake completer bypass)
 - Fake-only tests green: `claude_subscription` (4) + CLI parse/seat install (5)
 - No live Claude; proxy still present until A2b-3
+
+**A2b-2 closeout evidence (2026-09-01):**
+- Listener `:9191`/`:9292` = PID `96339` txt=`/Users/edjroz/Repos/source/gents/target/debug/gents` (same inode as rebuilt binary)
+- No restart needed (old handoff PIDs `87593`/`87694` already gone)
+- Claude backend show: `provider_kind=ClaudeCliSubscription`, `endpoint=claude-cli://subscription`, `openai_wire_api=null`, four full model IDs
+- Zero live Claude traffic during verification
+
+**A2b-3 closeout evidence (2026-09-01):**
+- Deleted `gents claude-proxy` command + `claude_proxy.rs`
+- Deleted managed-proxy flags/path from `serve.rs` / `args.rs` (`--claude-proxy*`, `--claude-model`)
+- Deleted `crates/gents/src/claude_completer/proxy.rs`; kept `DEFAULT_MODEL_ID` / `PATH_A_MODEL_IDS` / `live_claude_allowed` on `claude_completer`
+- Aligned `gents claude-login` live gate to refuse-closed `--claude-write-approved` (dry-run ungated)
+- Docs: `docs/backends.md` + SPEC success checkbox for proxy deletion
+- `GENTS_SKIP_LENS_BUILD=1 GENTS_SKIP_CALLBACK_WASM_BUILD=1 cargo check -p gents -p gents-cli` Finished ok
+- `cargo test -p gents --lib claude_` → 14 passed (log: `.scratch/claude-spike/logs/a2b3-gents-claude-tests.log`)
+- `cargo test -p gents-cli --lib claude_` → 14 passed (log: `.scratch/claude-spike/logs/a2b3-cli-claude-tests.log`)
+- Help smoke on rebuilt binary inode `44285772`: no `claude-proxy` command/flags; login gate documented
+- Zero live Claude traffic; running server PID `96339` still on pre-A2b-3 binary (no restart required for A2b-3)
 
 **Not in A2b:** tool bridging, oat storage, desktop UI, keeping HTTP proxy for debug.
 

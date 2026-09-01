@@ -16,9 +16,6 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::cli::*;
-use crate::commands::claude_proxy::{
-    start_managed_claude_proxy, ClaudeProxyConfig,
-};
 use crate::commands::codex_shim::{bind_codex_shim, CodexShimBindArgs};
 use crate::http::runtime_contract_router;
 use crate::shared::{P2pAdmissionState, *};
@@ -82,7 +79,7 @@ fn announce_codex_shim(
     })
 }
 
-fn validate_claude_proxy_args(args: &ServeArgs) -> Result<()> {
+fn validate_claude_seat_args(args: &ServeArgs) -> Result<()> {
     let has_seat_flags = args.claude_config_dir.is_some()
         || args.claude_workdir.is_some()
         || args.claude_log_dir.is_some()
@@ -90,20 +87,7 @@ fn validate_claude_proxy_args(args: &ServeArgs) -> Result<()> {
         || args.claude_bin.is_some()
         || args.claude_write_approved;
 
-    if args.claude_proxy {
-        let Some(config_dir) = args.claude_config_dir.as_ref() else {
-            anyhow::bail!("--claude-proxy requires --claude-config-dir");
-        };
-        if !config_dir.is_dir() {
-            anyhow::bail!(
-                "--claude-config-dir {} is not a directory",
-                config_dir.display()
-            );
-        }
-        return Ok(());
-    }
-
-    // A2b: --claude-config-dir installs the in-process seat without --claude-proxy.
+    // A2b: --claude-config-dir installs the in-process seat.
     if let Some(config_dir) = args.claude_config_dir.as_ref() {
         if !config_dir.is_dir() {
             anyhow::bail!(
@@ -116,7 +100,7 @@ fn validate_claude_proxy_args(args: &ServeArgs) -> Result<()> {
 
     if has_seat_flags {
         anyhow::bail!(
-            "--claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer / --claude-write-approved require --claude-config-dir (or --claude-proxy)"
+            "--claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer / --claude-write-approved require --claude-config-dir"
         );
     }
     Ok(())
@@ -143,25 +127,6 @@ fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
     })?;
     gents::claude_subscription::install_process_seat(Some(seat));
     Ok(())
-}
-
-fn managed_claude_proxy_config(args: &ServeArgs) -> Result<ClaudeProxyConfig> {
-    validate_claude_proxy_args(args)?;
-    let config_dir = args
-        .claude_config_dir
-        .clone()
-        .context("internal: --claude-proxy missing --claude-config-dir after validation")?;
-    Ok(ClaudeProxyConfig {
-        host: args.claude_proxy_host.clone(),
-        port: args.claude_proxy_port,
-        config_dir,
-        workdir: args.claude_workdir.clone(),
-        log_dir: args.claude_log_dir.clone(),
-        model: args.claude_model.clone(),
-        canned_text: "pong".to_string(),
-        fake_completer: args.claude_fake_completer.clone(),
-        claude_bin: args.claude_bin.clone(),
-    })
 }
 
 fn codex_shim_launch_command(websocket: &str, auth_token_env: Option<&str>) -> String {
@@ -478,7 +443,7 @@ pub(crate) async fn serve_with_control(
     if args.codex_shim_public_url.is_some() && codex_shim_auth_token.is_none() {
         anyhow::bail!("--codex-shim-public-url requires --codex-shim-auth-token-env");
     }
-    validate_claude_proxy_args(&args)?;
+    validate_claude_seat_args(&args)?;
     install_claude_subscription_seat(&args)?;
     let home_dir = resolve_home_dir(args.home.as_deref());
     let data_dir = args
@@ -884,32 +849,22 @@ pub(crate) async fn serve_with_control(
         None => None,
     };
 
-    let mut claude_proxy_output = None;
-    let mut claude_proxy_handle = None;
-    if args.claude_proxy {
-        let proxy_config = managed_claude_proxy_config(&args)?;
-        let proxy_shutdown = shutdown_tx.subscribe();
-        match start_managed_claude_proxy(proxy_config, proxy_shutdown).await {
-            Ok((info, handle)) => {
-                eprintln!(
-                    "Claude proxy managed by gents server on {} mode={} model={} write_approved={}",
-                    info.endpoint, info.mode, info.model, info.write_approved
-                );
-                claude_proxy_output = Some(info.to_json());
-                claude_proxy_handle = Some(handle);
-            }
-            Err(error) => {
-                let _ = shutdown_tx.send(true);
-                let _ = tokio::time::timeout(Duration::from_secs(5), &mut run_handle).await;
-                if let Some(handle) = codex_shim_handle.as_mut() {
-                    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-                }
-                return Err(error).context(
-                    "failed to start managed Claude proxy; runtime shut down rather than serving without it",
-                );
-            }
-        }
-    }
+    let claude_subscription = if args.claude_config_dir.is_some() {
+        Some(json!({
+            "seat_installed": true,
+            "config_dir": args
+                .claude_config_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            "write_approved": args.claude_write_approved,
+            "fake_completer": args
+                .claude_fake_completer
+                .as_ref()
+                .map(|p| p.display().to_string()),
+        }))
+    } else {
+        None
+    };
 
     let output = json!({
         "status": "serving",
@@ -928,7 +883,7 @@ pub(crate) async fn serve_with_control(
         "p2p_listen_addresses": p2p_status.get("p2p_listen_addresses").cloned().unwrap_or_else(|| json!([])),
         "p2p_admission": p2p_status.get("p2p_admission").cloned().unwrap_or(Value::Null),
         "codex_shim": codex_shim_output,
-        "claude_proxy": claude_proxy_output,
+        "claude_subscription": claude_subscription,
         "apply_root": pack_apply,
     });
     if let Some(ready) = ready {
@@ -969,42 +924,13 @@ pub(crate) async fn serve_with_control(
     }
 
     if let Some(handle) = codex_shim_handle.as_mut() {
-        if let Some(proxy_handle) = claude_proxy_handle.as_mut() {
-            tokio::select! {
-                result = &mut run_handle => {
-                    result.context("joining gents runtime task")?
-                }
-                result = handle => {
-                    result.context("joining Codex shim task")?
-                        .context("Codex shim task failed")?;
-                    Ok(())
-                }
-                result = proxy_handle => {
-                    result.context("joining managed Claude proxy task")?
-                        .context("managed Claude proxy task failed")?;
-                    Ok(())
-                }
-            }
-        } else {
-            tokio::select! {
-                result = &mut run_handle => {
-                    result.context("joining gents runtime task")?
-                }
-                result = handle => {
-                    result.context("joining Codex shim task")?
-                        .context("Codex shim task failed")?;
-                    Ok(())
-                }
-            }
-        }
-    } else if let Some(proxy_handle) = claude_proxy_handle.as_mut() {
         tokio::select! {
             result = &mut run_handle => {
                 result.context("joining gents runtime task")?
             }
-            result = proxy_handle => {
-                result.context("joining managed Claude proxy task")?
-                    .context("managed Claude proxy task failed")?;
+            result = handle => {
+                result.context("joining Codex shim task")?
+                    .context("Codex shim task failed")?;
                 Ok(())
             }
         }
@@ -1528,17 +1454,7 @@ mod shim_host_tests {
     }
 
     #[test]
-    fn managed_claude_proxy_requires_config_dir() {
-        let args = parse_server(&["--claude-proxy"]);
-        let err = validate_claude_proxy_args(&args).expect_err("config dir required");
-        assert!(
-            err.to_string().contains("--claude-proxy requires --claude-config-dir"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a2b_claude_config_dir_without_proxy_is_allowed() {
+    fn a2b_claude_config_dir_installs_seat_flags() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.scratch/claude-spike/tmp/a2b-config-dir");
         let _ = std::fs::remove_dir_all(&root);
@@ -1550,8 +1466,7 @@ mod shim_host_tests {
             config_dir.to_str().unwrap(),
             "--claude-write-approved",
         ]);
-        validate_claude_proxy_args(&args).expect("A2b seat flags without --claude-proxy");
-        assert!(!args.claude_proxy);
+        validate_claude_seat_args(&args).expect("A2b seat flags");
         assert!(args.claude_write_approved);
         assert_eq!(args.claude_config_dir.as_deref(), Some(config_dir.as_path()));
     }
@@ -1559,7 +1474,7 @@ mod shim_host_tests {
     #[test]
     fn claude_seat_orphan_flags_require_config_dir() {
         let args = parse_server(&["--claude-write-approved"]);
-        let err = validate_claude_proxy_args(&args).expect_err("orphan flags");
+        let err = validate_claude_seat_args(&args).expect_err("orphan flags");
         assert!(
             err.to_string().contains("require --claude-config-dir"),
             "{err}"
@@ -1587,46 +1502,6 @@ mod shim_host_tests {
         assert_eq!(seat.config_dir, config_dir);
         assert!(!seat.write_approved);
         assert_eq!(seat.fake_completer.as_deref(), Some(fake.as_path()));
-    }
-
-    #[tokio::test]
-    async fn managed_claude_proxy_binds_and_healthz() {
-        let temps = tempfile::tempdir().expect("tempdir");
-        let config_dir = temps.path().join("claude-config");
-        let workdir = temps.path().join("workdir");
-        let log_dir = temps.path().join("logs");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let config = ClaudeProxyConfig {
-            host: "127.0.0.1".into(),
-            port: 0,
-            config_dir,
-            workdir: Some(workdir),
-            log_dir: Some(log_dir),
-            model: "claude-sonnet-5".into(),
-            canned_text: "pong".into(),
-            fake_completer: None,
-            claude_bin: None,
-        };
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        // Production path must spawn before healthz; this helper encodes that order.
-        let (info, handle) = crate::commands::claude_proxy::start_managed_claude_proxy(
-            config,
-            shutdown_rx,
-        )
-        .await
-        .expect("start managed proxy");
-        let body: serde_json::Value = reqwest::Client::new()
-            .get(format!("http://{}/healthz", info.bind))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(body["mode"], "canned");
-        assert_eq!(body["model"], "claude-sonnet-5");
-        let _ = shutdown_tx.send(true);
-        handle.await.expect("join").expect("proxy ok");
     }
 
 }

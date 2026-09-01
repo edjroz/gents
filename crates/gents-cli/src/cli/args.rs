@@ -87,7 +87,7 @@ pub(crate) enum Command {
     #[command(
         name = "claude-login",
         about = "Sign in to Claude Max via official Claude CLI (seat stays in --config-dir; no oat in DefraDB)",
-        after_help = "Path A auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires CLAUDE_WRITE_APPROVED=1 after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
+        after_help = "Path A auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires --claude-write-approved after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
     )]
     ClaudeLogin(ClaudeLoginArgs),
     #[command(
@@ -96,11 +96,6 @@ pub(crate) enum Command {
         after_help = "Path A probe: reports logged_in / auth_method / subscription_type from `claude auth status`.\nSeat lives in Claude config, not DefraDB. Never upserts OAuthCredential."
     )]
     ClaudeAuthProbe(ClaudeAuthProbeArgs),
-    #[command(
-        name = "claude-proxy",
-        about = "Run the experimental Path A loopback OpenAI adapter for Claude Max (no oat in DefraDB)"
-    )]
-    ClaudeProxy(ClaudeProxyArgs),
     #[command(name = "__native-fs-runner", hide = true)]
     NativeFsRunner(NativeFsRunnerArgs),
     #[command(about = "Inspect and control live P2P runtime connectivity", after_help = P2P_AFTER_HELP)]
@@ -547,6 +542,12 @@ pub(crate) struct ClaudeLoginArgs {
     pub(crate) dry_run: bool,
     #[arg(
         long,
+        default_value_t = false,
+        help = "Refuse-closed write gate for live Claude login. Required after an explicit numbered write approval; --dry-run bypasses this."
+    )]
+    pub(crate) claude_write_approved: bool,
+    #[arg(
+        long,
         help = "Use Anthropic Console (API usage billing) instead of Claude subscription. Path A default is --claudeai."
     )]
     pub(crate) console: bool,
@@ -563,55 +564,6 @@ pub(crate) struct ClaudeAuthProbeArgs {
         help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
     )]
     pub(crate) config_dir: PathBuf,
-    #[arg(
-        long,
-        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
-    )]
-    pub(crate) claude_bin: Option<PathBuf>,
-}
-
-#[derive(clap::Args)]
-pub(crate) struct ClaudeProxyArgs {
-    #[arg(
-        long,
-        default_value = "127.0.0.1",
-        help = "Bind host (loopback only: 127.0.0.1, localhost, ::1)"
-    )]
-    pub(crate) host: String,
-    #[arg(long, default_value_t = 8787, help = "Bind port")]
-    pub(crate) port: u16,
-    #[arg(
-        long,
-        help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
-    )]
-    pub(crate) config_dir: PathBuf,
-    #[arg(
-        long,
-        help = "Working directory for Claude CLI child processes. Defaults to <config-dir>/../workdir when unset."
-    )]
-    pub(crate) workdir: Option<PathBuf>,
-    #[arg(
-        long,
-        help = "Directory for proxy-requests.jsonl. Defaults to <config-dir>/../logs when unset."
-    )]
-    pub(crate) log_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value = "claude-sonnet-5",
-        help = "Default client-facing model when the request omits model. /v1/models advertises the full Path A catalog."
-    )]
-    pub(crate) model: String,
-    #[arg(
-        long,
-        default_value = "pong",
-        help = "Assistant text returned in canned mode (PROXY_USE_CLAUDE unset)"
-    )]
-    pub(crate) canned_text: String,
-    #[arg(
-        long,
-        help = "Optional fake completer executable for live-wiring tests (prints assistant text on stdout)"
-    )]
-    pub(crate) fake_completer: Option<PathBuf>,
     #[arg(
         long,
         help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
@@ -904,25 +856,7 @@ pub(crate) struct ServeArgs {
     pub(crate) no_codex_shim: bool,
     #[arg(
         long,
-        default_value_t = false,
-        help = "Start Path A Claude Max proxy inside this server process (A2a). Requires --claude-config-dir. Live Claude still needs PROXY_USE_CLAUDE=1 and CLAUDE_WRITE_APPROVED=1."
-    )]
-    pub(crate) claude_proxy: bool,
-    #[arg(
-        long,
-        default_value = "127.0.0.1",
-        help = "Host for the managed Claude proxy (loopback only)"
-    )]
-    pub(crate) claude_proxy_host: String,
-    #[arg(
-        long,
-        default_value_t = 8787,
-        help = "Port for the managed Claude proxy"
-    )]
-    pub(crate) claude_proxy_port: u16,
-    #[arg(
-        long,
-        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Required for --claude-proxy (A2a). For A2b in-process ClaudeCliSubscription, this installs the process seat without starting the HTTP proxy. Explicit — no silent ~/.claude default."
+        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Installs the process-local ClaudeCliSubscription seat for this server. Explicit — no silent ~/.claude default."
     )]
     pub(crate) claude_config_dir: Option<PathBuf>,
     #[arg(
@@ -932,15 +866,9 @@ pub(crate) struct ServeArgs {
     pub(crate) claude_workdir: Option<PathBuf>,
     #[arg(
         long,
-        help = "Log directory for Claude proxy-requests.jsonl / completer logs. Defaults beside --claude-config-dir when unset."
+        help = "Log directory for Claude completer logs. Defaults beside --claude-config-dir when unset."
     )]
     pub(crate) claude_log_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value = "claude-sonnet-5",
-        help = "Default Claude model id (managed proxy advertisement / seat default)"
-    )]
-    pub(crate) claude_model: String,
     #[arg(
         long,
         help = "Optional Claude CLI binary. Defaults to `claude` on PATH"
@@ -948,7 +876,7 @@ pub(crate) struct ServeArgs {
     pub(crate) claude_bin: Option<PathBuf>,
     #[arg(
         long,
-        help = "Optional fake completer for Claude wiring tests (managed proxy and A2b in-process)"
+        help = "Optional fake completer for Claude wiring tests (A2b in-process; bypasses live write gate)"
     )]
     pub(crate) claude_fake_completer: Option<PathBuf>,
     #[arg(

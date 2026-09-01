@@ -284,7 +284,8 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 
    ```sh
    gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
-   # Live login needs numbered Claude write approval + CLAUDE_WRITE_APPROVED=1
+   # Live login needs numbered Claude write approval + --claude-write-approved
+   gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
    gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
    ```
 
@@ -375,6 +376,5 @@ together:
    ```
 
 `/model` should show Grok models and the Claude Max IDs. Claude remains
-text-only under A2b. The transitional A2a managed `gents claude-proxy` /
-`--claude-proxy` path is retained only until A2b-3 deletion; new setups should
-not use `:8787`.
+text-only under A2b. There is no HTTP `claude-proxy` / `:8787` path anymore —
+use `--claude-config-dir` + `ClaudeCliSubscription` only.
