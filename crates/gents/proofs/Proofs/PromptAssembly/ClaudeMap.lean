@@ -39,6 +39,16 @@ inductive MapError where
   | duplicateId (id : ToolCallId)
   deriving DecidableEq, Repr
 
+def errorName : MapError → String
+  | .emptySurface => "emptySurface"
+  | .unmappedName name => "unmappedName:" ++ name
+  | .duplicateId id => "duplicateId:" ++ toString id
+
+def blockTag : Block → String
+  | .text => "text"
+  | .toolUse id name => s!"toolUse:{id}:{name}"
+  | .toolResult id => s!"toolResult:{id}"
+
 /-- Map one `tool_use`. Empty surface or a name not on it fails closed. -/
 def mapToolUse (surface : Surface) (id : ToolCallId) (name : String) :
     Except MapError ToolCallId :=
@@ -58,35 +68,29 @@ theorem mapToolUse_ok_mem {surface : Surface} {id : ToolCallId} {name : String}
   unfold mapToolUse at h
   by_cases hEmpty : surface = ∅
   · simp [hEmpty] at h
-  · simp [hEmpty] at h
-    by_cases hMem : name ∈ surface
+  · by_cases hMem : name ∈ surface
     · exact hMem
-    · simp [hMem] at h
-      cases h
+    · simp [hEmpty, hMem] at h
 
 theorem mapToolUse_ok_nonempty {surface : Surface} {id : ToolCallId} {name : String}
     (h : mapToolUse surface id name = .ok id) : surface ≠ ∅ := by
   intro hempty
-  have := mapToolUse_empty (name := name) id
-  rw [hempty] at h
-  cases h
+  simp [mapToolUse, hempty] at h
 
 theorem mapToolUse_preserves_id {surface : Surface} {id id' : ToolCallId}
     {name : String} (h : mapToolUse surface id name = .ok id') : id' = id := by
   unfold mapToolUse at h
   by_cases hEmpty : surface = ∅
   · simp [hEmpty] at h
-  · simp [hEmpty] at h
-    by_cases hMem : name ∈ surface
-    · simp [hMem] at h
+  · by_cases hMem : name ∈ surface
+    · simp [hEmpty, hMem] at h
       exact h.symm
-    · simp [hMem] at h
+    · simp [hEmpty, hMem] at h
 
 theorem mapToolUse_unmapped {surface : Surface} {id : ToolCallId} {name : String}
     (hne : surface ≠ ∅) (hmem : name ∉ surface) :
     mapToolUse surface id name = .error (.unmappedName name) := by
-  unfold mapToolUse
-  simp [hne, hmem]
+  simp [mapToolUse, hne, hmem]
 
 /-- `Bash` is not `bash`. No aliases. -/
 theorem mapToolUse_no_bash_alias (id : ToolCallId) :

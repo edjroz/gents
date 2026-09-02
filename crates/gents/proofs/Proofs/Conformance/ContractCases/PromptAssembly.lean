@@ -508,4 +508,47 @@ private def turnBudgetCase
 def promptAssemblyTurnBudgetCases : List PromptAssemblyTurnBudgetCase :=
   turnBudgetWitnesses.map turnBudgetCase
 
+/-! ## Claude content-block map (Track B / B2)
+
+Every `outcome` / `ids` field is `mapTurn` (or its error), not a hand oracle.
+The Completer parser must reproduce these results. -/
+
+structure PromptAssemblyClaudeMapCase where
+  name : String
+  surface : List String
+  blocks : List String
+  outcome : String
+  ids : List Nat
+  deriving Repr
+
+private def surfaceOf : List String → PromptAssembly.ClaudeMap.Surface
+  | [] => ∅
+  | n :: rest => insert n (surfaceOf rest)
+
+private def claudeMapCase (name : String) (surface : List String)
+    (blocks : List PromptAssembly.ClaudeMap.Block) : PromptAssemblyClaudeMapCase :=
+  let tagged := blocks.map PromptAssembly.ClaudeMap.blockTag
+  match PromptAssembly.ClaudeMap.mapTurn (surfaceOf surface) blocks with
+  | .ok _ =>
+    { name := name
+    , surface := surface
+    , blocks := tagged
+    , outcome := "ok"
+    , ids := (PromptAssembly.ClaudeMap.toolUsePairs blocks).map (·.1) }
+  | .error e =>
+    { name := name
+    , surface := surface
+    , blocks := tagged
+    , outcome := PromptAssembly.ClaudeMap.errorName e
+    , ids := [] }
+
+def promptAssemblyClaudeMapCases : List PromptAssemblyClaudeMapCase :=
+  [ claudeMapCase "text-only-empty-surface" [] [.text]
+  , claudeMapCase "mapped-echo" ["echo"] [.toolUse 1 "echo"]
+  , claudeMapCase "bash-is-not-bash" ["bash"] [.toolUse 1 "Bash"]
+  , claudeMapCase "empty-surface-tool-use" [] [.toolUse 1 "echo"]
+  , claudeMapCase "duplicate-id" ["echo"]
+      [.toolUse 1 "echo", .toolUse 1 "echo"]
+  ]
+
 end Conformance.ContractCases

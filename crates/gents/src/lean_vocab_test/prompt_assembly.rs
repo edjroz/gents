@@ -72,6 +72,17 @@ pub(crate) struct LeanPromptAssemblyBudgetCase {
     pub(crate) provider_safe: bool,
 }
 
+/// A Claude `tool_use` map witness computed by
+/// `PromptAssembly.ClaudeMap.mapTurn`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub(crate) struct LeanPromptAssemblyClaudeMapCase {
+    pub(crate) name: String,
+    pub(crate) surface: Vec<String>,
+    pub(crate) blocks: Vec<String>,
+    pub(crate) outcome: String,
+    pub(crate) ids: Vec<u64>,
+}
+
 /// A multi-turn provider-input budget trace computed by
 /// `PromptAssembly.Budget`.
 #[derive(Debug, Deserialize, Clone)]

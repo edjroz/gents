@@ -107,4 +107,17 @@ def promptAssemblyTurnBudgetCaseJson
 def promptAssemblyTurnBudgetCasesJson : String :=
   jsonArray (promptAssemblyTurnBudgetCases.map promptAssemblyTurnBudgetCaseJson)
 
+def promptAssemblyClaudeMapCaseJson
+    (witness : PromptAssemblyClaudeMapCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"surface\":" ++ jsonStringArray witness.surface ++ ","
+    ++ "\"blocks\":" ++ jsonStringArray witness.blocks ++ ","
+    ++ "\"outcome\":" ++ jsonString witness.outcome ++ ","
+    ++ "\"ids\":" ++ jsonNatArray witness.ids
+    ++ "}"
+
+def promptAssemblyClaudeMapCasesJson : String :=
+  jsonArray (promptAssemblyClaudeMapCases.map promptAssemblyClaudeMapCaseJson)
+
 end Conformance.Contracts

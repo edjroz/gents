@@ -24,8 +24,11 @@ use gents::llm::message::{
     ToolResultContent, UserContent,
 };
 
+use gents::claude_completer::{CompleterParseError, StreamJsonlEvent, StreamJsonlState};
+
 use crate::lean_vocab_test::{
-    lean_prompt_assembly_sanitize_cases, LeanPromptAssemblyItem, LeanPromptAssemblyRow,
+    LeanPromptAssemblyItem, LeanPromptAssemblyRow, lean_prompt_assembly_claude_map_cases,
+    lean_prompt_assembly_sanitize_cases,
 };
 
 /// Stable identities for the abstract ids the model uses. The model abstracts
@@ -317,6 +320,105 @@ fn generated_sanitize_cases_drive_the_production_sanitizer() {
             );
         }
     }
+}
+
+/// Fence: Completer `StreamJsonlState` reproduces `ClaudeMap.mapTurn` on every
+/// generated witness (mapped ids, empty-surface / unmapped / duplicate fail closed).
+#[test]
+fn generated_claude_map_cases_drive_the_completer_parser() {
+    let cases = lean_prompt_assembly_claude_map_cases();
+    assert!(
+        !cases.is_empty(),
+        "Lean emitted no PromptAssembly Claude map cases"
+    );
+    for case in cases {
+        let mut state = StreamJsonlState::with_surface(case.surface.iter().cloned());
+        let line = claude_map_assistant_line(&case.blocks);
+        let pushed = state.push_line(&line);
+        match case.outcome.as_str() {
+            "ok" => {
+                let events =
+                    pushed.unwrap_or_else(|err| panic!("case {} should map: {err}", case.name));
+                let got_ids: Vec<u64> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        StreamJsonlEvent::ToolUse { id, .. } => {
+                            Some(id.parse::<u64>().unwrap_or_else(|_| {
+                                panic!("case {} mapped id {id} is not a Nat", case.name)
+                            }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(got_ids, case.ids, "mapped ids ({})", case.name);
+                state
+                    .finish()
+                    .unwrap_or_else(|err| panic!("case {} finish: {err}", case.name));
+            }
+            "emptySurface" => {
+                let err = pushed.expect_err("empty surface must fail closed");
+                match err {
+                    CompleterParseError::ToolUse { .. } => {}
+                    other => panic!("case {} unexpected error: {other:?}", case.name),
+                }
+            }
+            outcome if outcome.starts_with("unmappedName:") => {
+                let name = outcome.strip_prefix("unmappedName:").expect("prefix");
+                let err = pushed.expect_err("unmapped name must fail closed");
+                match err {
+                    CompleterParseError::ToolUse { names } => {
+                        assert!(
+                            names.contains(name),
+                            "case {} names {names} missing {name}",
+                            case.name
+                        );
+                    }
+                    other => panic!("case {} unexpected error: {other:?}", case.name),
+                }
+            }
+            outcome if outcome.starts_with("duplicateId:") => {
+                let id = outcome.strip_prefix("duplicateId:").expect("prefix");
+                let err = pushed.expect_err("duplicate id must fail closed");
+                match err {
+                    CompleterParseError::DuplicateToolUseId { id: got } => {
+                        assert_eq!(got, id, "case {}", case.name);
+                    }
+                    other => panic!("case {} unexpected error: {other:?}", case.name),
+                }
+            }
+            other => panic!("case {} unknown outcome {other}", case.name),
+        }
+    }
+}
+
+fn claude_map_assistant_line(blocks: &[String]) -> String {
+    let content: Vec<serde_json::Value> = blocks
+        .iter()
+        .filter_map(|block| {
+            if block == "text" {
+                Some(serde_json::json!({"type":"text","text":"hi"}))
+            } else if let Some(rest) = block.strip_prefix("toolUse:") {
+                let (id, name) = rest
+                    .split_once(':')
+                    .unwrap_or_else(|| panic!("toolUse tag must be toolUse:id:name, got {block}"));
+                Some(serde_json::json!({
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": {}
+                }))
+            } else if block.starts_with("toolResult:") {
+                None
+            } else {
+                panic!("unknown Claude map block tag {block}")
+            }
+        })
+        .collect();
+    serde_json::json!({
+        "type": "assistant",
+        "message": { "role": "assistant", "content": content }
+    })
+    .to_string()
 }
 
 /// Pairing identity: calls and results pair on `call_id.unwrap_or(id)`
