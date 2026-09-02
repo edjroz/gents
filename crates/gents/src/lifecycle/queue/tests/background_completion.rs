@@ -168,19 +168,12 @@ async fn concurrent_notifications_converge_to_one_pending_wake() {
     let (first, second) = tokio::join!(first, second);
     let first = first.unwrap();
     let second = second.unwrap();
-    assert_eq!(first.request.doc_id, second.request.doc_id);
-    assert_eq!(
-        [first.created_request, second.created_request]
-            .into_iter()
-            .filter(|created| *created)
-            .count(),
-        1
-    );
 
     let request_query = format!(
         r#"{{
             AgentRequest(filter: {{ session_id: {{ _eq: "{}" }} }}) {{
                 _docID request_id status lifecycle_state
+                superseded_by_request superseded_by_request_doc_id
             }}
         }}"#,
         escape_graphql_string(&parent.session_id)
@@ -194,13 +187,40 @@ async fn concurrent_notifications_converge_to_one_pending_wake() {
     let requests = request_response.data.as_ref().unwrap()["AgentRequest"]
         .as_array()
         .unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|row| row["status"] == "pending" && row["lifecycle_state"] == "pending")
-            .count(),
-        1
-    );
+    let pending = requests
+        .iter()
+        .filter(|row| row["status"] == "pending" && row["lifecycle_state"] == "pending")
+        .collect::<Vec<_>>();
+    assert_eq!(pending.len(), 1);
+    let survivor_request_id = pending[0]["request_id"].as_str().unwrap();
+    let survivor_doc_id = pending[0]["_docID"].as_str().unwrap();
+    for row in requests {
+        if row["_docID"] == survivor_doc_id {
+            continue;
+        }
+        assert_eq!(row["status"], "superseded");
+        assert_eq!(row["lifecycle_state"], "superseded");
+        assert_eq!(
+            row["superseded_by_request"].as_str(),
+            Some(survivor_request_id)
+        );
+        assert_eq!(
+            row["superseded_by_request_doc_id"].as_str(),
+            Some(survivor_doc_id)
+        );
+    }
+    let reconciled = reconcile_coalesced_pending_request(
+        &db.node,
+        &parent.session_id,
+        &parent.agent_did,
+        QueueSource::BackgroundCompletion,
+        background_hints(&parent).key.as_deref().unwrap(),
+    )
+    .await
+    .unwrap()
+    .expect("the converged pending wake remains available");
+    assert_eq!(reconciled.request_id, survivor_request_id);
+    assert_eq!(reconciled.doc_id, survivor_doc_id);
 
     let message_query = format!(
         r#"{{
@@ -240,6 +260,8 @@ async fn concurrent_notifications_converge_to_one_pending_wake() {
         })
         .collect::<std::collections::BTreeSet<_>>();
     assert!(actual.is_subset(&persisted_bindings));
+    assert!(persisted_bindings.contains(&(first.request.request_id, first.request.doc_id,)));
+    assert!(persisted_bindings.contains(&(second.request.request_id, second.request.doc_id,)));
 }
 
 #[tokio::test]
