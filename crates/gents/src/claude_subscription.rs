@@ -176,6 +176,11 @@ async fn complete_text(
         prompt
     };
 
+    // Non-HTTP Completer: claim+persist the armed rendered-request capture
+    // before spawning Claude. Without this the owned loop's "response arrived
+    // with capture still armed" fence treats Claude as a mis-wired stack.
+    capture_claude_cli_request(model, &prompt, request).await?;
+
     if let Some(fake) = &seat.fake_completer {
         return run_fake_completer(fake, &prompt).await;
     }
@@ -188,6 +193,36 @@ async fn complete_text(
     }
 
     run_live_completer(&seat, model, &prompt).await
+}
+
+async fn capture_claude_cli_request(
+    model: &str,
+    prompt: &str,
+    request: &CompletionRequest,
+) -> Result<(), CompletionError> {
+    let request_json = serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": prompt,
+        }],
+        "tools": [],
+        "tool_choice": null,
+        "temperature": request.temperature,
+        "max_tokens": request.max_tokens,
+        "provider": "ClaudeCliSubscription",
+        "endpoint": DEFAULT_BACKEND_ENDPOINT,
+    });
+    crate::rendered_request::scope::claim_and_capture_process_cli(
+        request_json,
+        Some(DEFAULT_BACKEND_ENDPOINT.to_string()),
+    )
+    .await
+    .map_err(|error| {
+        CompletionError::ProviderError(format!(
+            "rendered-request capture failed before Claude CLI spawn: {error:#}"
+        ))
+    })
 }
 
 async fn run_fake_completer(fake: &Path, prompt: &str) -> Result<String, CompletionError> {
@@ -244,10 +279,7 @@ async fn run_live_completer(
     }
 
     let output = cmd.output().await.map_err(|err| {
-        CompletionError::ProviderError(format!(
-            "spawn {}: {err}",
-            seat.claude_bin.display()
-        ))
+        CompletionError::ProviderError(format!("spawn {}: {err}", seat.claude_bin.display()))
     })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -265,8 +297,12 @@ async fn run_live_completer(
         )));
     }
 
-    let text = if stdout.lines().any(|line| line.trim_start().starts_with('{')) {
-        parse_stream_jsonl(&stdout).map_err(|err| CompletionError::ProviderError(err.to_string()))?
+    let text = if stdout
+        .lines()
+        .any(|line| line.trim_start().starts_with('{'))
+    {
+        parse_stream_jsonl(&stdout)
+            .map_err(|err| CompletionError::ProviderError(err.to_string()))?
     } else {
         stdout.trim().to_string()
     };
@@ -295,7 +331,9 @@ pub fn flatten_completion_request(request: &CompletionRequest) -> String {
                 let text = content
                     .iter()
                     .filter_map(|block| match block {
-                        rig::completion::message::UserContent::Text(text) => Some(text.text.as_str()),
+                        rig::completion::message::UserContent::Text(text) => {
+                            Some(text.text.as_str())
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -341,6 +379,7 @@ mod tests {
     use rig::completion::message::{Message, Text, UserContent};
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
 
     fn workspace_tempdir(label: &str) -> PathBuf {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -361,6 +400,249 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_claims_armed_scope_before_fake_completer() {
+        use crate::rendered_request::scope::{
+            ambient_arming_sink, pending_is_armed, scope_request, test_scope,
+        };
+        use crate::rendered_request::{
+            AssemblyBuildPath, AssemblyTrace, CaptureScopeKind, RenderedCompletionRequest,
+            RenderedRequestCaptureSink, RenderedRequestContext, RenderedRequestSource,
+        };
+        use tokio::sync::Mutex;
+
+        let temp = workspace_tempdir("process-cli-capture");
+        let fake = write_fake_completer(&temp, "printf 'pong\\n'");
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let seen: Arc<Mutex<Vec<RenderedCompletionRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        let sink: RenderedRequestCaptureSink = Arc::new(move |rendered| {
+            let sink_seen = sink_seen.clone();
+            Box::pin(async move {
+                sink_seen.lock().await.push(rendered);
+                Ok(())
+            })
+        });
+        let context = RenderedRequestContext {
+            request_doc_id: "doc-claude".to_string(),
+            request_commit_cid: "bafy-request-commit".to_string(),
+            request_id: "req-claude".to_string(),
+            agent_did: "did:key:agent".to_string(),
+            requester_did: String::new(),
+            behavior_id: "behavior".to_string(),
+            session_id: "session-claude".to_string(),
+            model_name: "claude-sonnet-5".to_string(),
+        };
+        let scope = test_scope(context, sink);
+
+        scope_request(scope, async {
+            let arm = ambient_arming_sink(CaptureScopeKind::Inference);
+            arm(
+                0,
+                0,
+                ping_request(),
+                AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, Vec::new()),
+            )
+            .await
+            .expect("arm");
+            assert!(pending_is_armed(), "capture must be armed before Completer");
+
+            let client = ClaudeSubscriptionClient::new();
+            let model = client.completion_model("claude-sonnet-5");
+            let mut stream = model.stream(ping_request()).await.expect("stream");
+            use futures::StreamExt;
+            use rig::streaming::StreamedAssistantContent;
+            let mut texts = Vec::new();
+            while let Some(item) = stream.next().await {
+                match item.expect("chunk") {
+                    StreamedAssistantContent::Text(text) => texts.push(text.text),
+                    StreamedAssistantContent::Final(_) => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(texts.join(""), "pong");
+            assert!(
+                !pending_is_armed(),
+                "Claude Completer must claim the armed capture"
+            );
+        })
+        .await;
+
+        let captured = seen.lock().await;
+        assert_eq!(captured.len(), 1, "exactly one durable capture");
+        assert_eq!(
+            captured[0].source,
+            RenderedRequestSource::ClaudeCliSubscription
+        );
+        assert_eq!(
+            captured[0]
+                .provenance_json
+                .get("capture_seam")
+                .and_then(|v| v.as_str()),
+            Some("process_cli")
+        );
+        assert_eq!(captured[0].model_name, "claude-sonnet-5");
+        assert!(
+            captured[0]
+                .request_json
+                .get("endpoint")
+                .and_then(|v| v.as_str())
+                == Some(DEFAULT_BACKEND_ENDPOINT)
+        );
+        assert_eq!(
+            captured[0].request_json.get("tools"),
+            Some(&serde_json::json!([]))
+        );
+    }
+
+    fn ping_request() -> CompletionRequest {
+        CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: OneOrMany::one(Message::User {
+                content: OneOrMany::one(UserContent::Text(Text {
+                    text: "Reply with exactly: pong".into(),
+                })),
+            }),
+            documents: Vec::new(),
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
+        }
+    }
+
+    fn install_fake_seat(temp: &Path, fake_body: &str) -> PathBuf {
+        let fake = write_fake_completer(temp, fake_body);
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+        temp.join("spawned")
+    }
+
+    #[tokio::test]
+    async fn process_cli_unexplained_send_inside_scope_does_not_spawn() {
+        use crate::rendered_request::scope::{scope_request, test_scope};
+        use crate::rendered_request::{RenderedRequestCaptureSink, RenderedRequestContext};
+
+        let temp = workspace_tempdir("process-cli-unexplained");
+        let spawned = install_fake_seat(
+            &temp,
+            &format!(
+                "touch '{}' && printf 'pong\\n'",
+                temp.join("spawned").display()
+            ),
+        );
+        let sink: RenderedRequestCaptureSink = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let scope = test_scope(
+            RenderedRequestContext {
+                request_doc_id: "doc-unexplained".to_string(),
+                request_commit_cid: "bafy-request-commit".to_string(),
+                request_id: "req-unexplained".to_string(),
+                agent_did: "did:key:agent".to_string(),
+                requester_did: String::new(),
+                behavior_id: "behavior".to_string(),
+                session_id: "session-unexplained".to_string(),
+                model_name: "claude-sonnet-5".to_string(),
+            },
+            sink,
+        );
+
+        let error = scope_request(scope, async {
+            let client = ClaudeSubscriptionClient::new();
+            let model = client.completion_model("claude-sonnet-5");
+            match model.stream(ping_request()).await {
+                Err(err) => err,
+                Ok(_) => panic!("unexplained Completer send must be refused"),
+            }
+        })
+        .await;
+        let message = error.to_string();
+        assert!(
+            message.contains("no armed rendered-request capture"),
+            "{message}"
+        );
+        assert!(
+            !spawned.exists(),
+            "unexplained send must not spawn the fake completer"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_failure_does_not_spawn_fake_completer() {
+        use crate::rendered_request::scope::{ambient_arming_sink, scope_request, test_scope};
+        use crate::rendered_request::{
+            AssemblyBuildPath, AssemblyTrace, CaptureScopeKind, RenderedRequestCaptureSink,
+            RenderedRequestContext,
+        };
+
+        let temp = workspace_tempdir("process-cli-capture-fail");
+        let spawned = install_fake_seat(
+            &temp,
+            &format!(
+                "touch '{}' && printf 'pong\\n'",
+                temp.join("spawned").display()
+            ),
+        );
+        let sink: RenderedRequestCaptureSink =
+            Arc::new(|_| Box::pin(async { anyhow::bail!("injected capture failure") }));
+        let scope = test_scope(
+            RenderedRequestContext {
+                request_doc_id: "doc-fail".to_string(),
+                request_commit_cid: "bafy-request-commit".to_string(),
+                request_id: "req-fail".to_string(),
+                agent_did: "did:key:agent".to_string(),
+                requester_did: String::new(),
+                behavior_id: "behavior".to_string(),
+                session_id: "session-fail".to_string(),
+                model_name: "claude-sonnet-5".to_string(),
+            },
+            sink,
+        );
+
+        let error = scope_request(scope, async {
+            let arm = ambient_arming_sink(CaptureScopeKind::Inference);
+            arm(
+                0,
+                0,
+                ping_request(),
+                AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, Vec::new()),
+            )
+            .await
+            .expect("arm");
+            let client = ClaudeSubscriptionClient::new();
+            let model = client.completion_model("claude-sonnet-5");
+            match model.stream(ping_request()).await {
+                Err(err) => err,
+                Ok(_) => panic!("persist failure must refuse spawn"),
+            }
+        })
+        .await;
+        let message = error.to_string();
+        assert!(message.contains("was not issued"), "{message}");
+        assert!(
+            !spawned.exists(),
+            "capture failure must not spawn the fake completer"
+        );
     }
 
     #[test]

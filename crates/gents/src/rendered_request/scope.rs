@@ -361,8 +361,97 @@ pub(crate) async fn capture_body(
 ) -> std::result::Result<(), (CaptureFailureStage, anyhow::Error)> {
     let request_json: serde_json::Value = serde_json::from_slice(body)
         .map_err(|error| (CaptureFailureStage::DecodeBody, anyhow::Error::from(error)))?;
+    capture_request_json(
+        scope,
+        pending,
+        source,
+        provider_endpoint,
+        request_json,
+        super::CaptureSeam::TransportBody,
+    )
+    .await
+}
+
+/// Claim the armed capture and persist a process-local Completer request.
+///
+/// Used by non-HTTP providers (Claude CLI subscription) that never pass through
+/// `RenderedRequestCapturingHttpClient`. Outside a capture scope this is a
+/// no-op so unit tests and library embeddings keep working. Inside a scope an
+/// unexplained send (no arm) is refused, matching the HTTP transport contract.
+pub(crate) async fn claim_and_capture_process_cli(
+    request_json: serde_json::Value,
+    provider_endpoint: Option<String>,
+) -> Result<(), anyhow::Error> {
+    let Some((scope, claim)) = claim_pending() else {
+        return Ok(());
+    };
+    let pending = match claim {
+        CaptureClaim::Armed(pending) => pending,
+        CaptureClaim::Resend {
+            pending,
+            durable_body_fingerprint: _,
+        } => pending,
+        CaptureClaim::Unexplained => {
+            let path = provider_endpoint
+                .as_deref()
+                .unwrap_or("claude-cli://subscription");
+            tracing::error!(
+                request_id = %scope.context().request_id,
+                session_id = %scope.context().session_id,
+                path = %path,
+                "refusing process-CLI spawn: a completion request reached the Completer with no armed \
+                 rendered-request capture"
+            );
+            return Err(anyhow::anyhow!(unexplained_send_message(
+                scope.context(),
+                path
+            )));
+        }
+    };
+
+    let capture_scope = pending.capture_scope.clone();
+    let turn_index = pending.turn_index;
+    let attempt = pending.attempt;
+    capture_request_json(
+        scope.as_ref(),
+        pending,
+        super::RenderedRequestSource::ClaudeCliSubscription,
+        provider_endpoint,
+        request_json,
+        super::CaptureSeam::ProcessCli,
+    )
+    .await
+    .map_err(|(stage, error)| {
+        tracing::error!(
+            capture_scope = %capture_scope,
+            request_id = %scope.context().request_id,
+            session_id = %scope.context().session_id,
+            turn_index,
+            attempt,
+            stage = stage.as_str(),
+            error = %format!("{error:#}"),
+            "refusing process-CLI spawn: rendered-request capture failed"
+        );
+        anyhow::anyhow!(capture_failure_message(
+            stage,
+            &capture_scope,
+            turn_index,
+            attempt,
+            &error
+        ))
+    })
+}
+
+async fn capture_request_json(
+    scope: &RequestCaptureScope,
+    pending: PendingCapture,
+    source: super::RenderedRequestSource,
+    provider_endpoint: Option<String>,
+    request_json: serde_json::Value,
+    capture_seam: super::CaptureSeam,
+) -> std::result::Result<(), (CaptureFailureStage, anyhow::Error)> {
     let components = super::RenderedRequestComponents::from_provider_body(request_json, source);
-    let rendered = super::build_rendered_completion_request(
+    let rendered = super::build_rendered_completion_request_at_seam(
         scope.context(),
         &pending.capture_scope,
         source,
@@ -371,6 +460,7 @@ pub(crate) async fn capture_body(
         pending.attempt,
         pending.assembly_trace,
         components,
+        capture_seam,
     )
     .map_err(|error| (CaptureFailureStage::BuildFact, error))?;
 
@@ -574,5 +664,106 @@ mod tests {
         assert!(arm(CaptureScopeKind::Inference, 0, 0, trace()).is_none());
         assert!(!pending_is_armed());
         assert!(claim_pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_without_a_scope_is_a_noop() {
+        claim_and_capture_process_cli(serde_json::json!({"model": "x", "messages": []}), None)
+            .await
+            .expect("outside a capture scope process-CLI capture is a no-op");
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_inside_a_scope_that_never_armed_is_refused() {
+        let scope = test_scope(context(), noop_sink());
+        let error = scope_request(scope, async {
+            claim_and_capture_process_cli(
+                serde_json::json!({"model": "x", "messages": []}),
+                Some("claude-cli://subscription".to_string()),
+            )
+            .await
+            .expect_err("unexplained process-CLI send must be refused")
+        })
+        .await;
+        let message = error.to_string();
+        assert!(
+            message.contains("no armed rendered-request capture"),
+            "{message}"
+        );
+        assert!(message.contains("claude-cli://subscription"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_persists_the_armed_attempt_at_the_process_cli_seam() {
+        use std::sync::{Arc, Mutex};
+
+        use super::super::{
+            CaptureSeam, RenderedCompletionRequest, RenderedRequestSource, CAPTURE_VERSION,
+        };
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let sink: RenderedRequestCaptureSink = Arc::new(move |rendered| {
+            let seen = Arc::clone(&sink_seen);
+            Box::pin(async move {
+                seen.lock().expect("seen").push(rendered);
+                Ok(())
+            })
+        });
+        let scope = test_scope(context(), sink);
+
+        scope_request(scope, async {
+            arm(CaptureScopeKind::Inference, 4, 1, trace()).expect("armed");
+            assert!(pending_is_armed());
+            claim_and_capture_process_cli(
+                serde_json::json!({
+                    "model": "claude-sonnet-5",
+                    "messages": [{"role": "user", "content": "pong"}],
+                    "tools": [],
+                }),
+                Some("claude-cli://subscription".to_string()),
+            )
+            .await
+            .expect("process-CLI capture");
+            assert!(!pending_is_armed(), "the arm must be claimed");
+        })
+        .await;
+
+        let seen = seen.lock().expect("seen");
+        assert_eq!(seen.len(), 1);
+        let rendered: &RenderedCompletionRequest = &seen[0];
+        assert_eq!(rendered.turn_index, 4);
+        assert_eq!(rendered.attempt, 1);
+        assert_eq!(rendered.capture_scope, "inference.1");
+        assert_eq!(rendered.capture_version, CAPTURE_VERSION);
+        assert_eq!(
+            rendered.source,
+            RenderedRequestSource::ClaudeCliSubscription
+        );
+        assert_eq!(rendered.model_name, "claude-sonnet-5");
+        assert_eq!(rendered.messages_json[0]["role"], "user");
+        let manifest: super::super::ProvenanceManifest =
+            serde_json::from_value(rendered.provenance_json.clone()).expect("manifest");
+        assert_eq!(manifest.capture_seam, CaptureSeam::ProcessCli);
+    }
+
+    #[tokio::test]
+    async fn process_cli_capture_failure_does_not_consume_into_a_successful_send() {
+        let sink: RenderedRequestCaptureSink =
+            Arc::new(|_| Box::pin(async { anyhow::bail!("injected capture failure") }));
+        let scope = test_scope(context(), sink);
+        let error = scope_request(scope, async {
+            arm(CaptureScopeKind::Inference, 0, 0, trace()).expect("armed");
+            claim_and_capture_process_cli(
+                serde_json::json!({"model": "x", "messages": []}),
+                Some("claude-cli://subscription".to_string()),
+            )
+            .await
+            .expect_err("persist failure must refuse spawn")
+        })
+        .await;
+        let message = error.to_string();
+        assert!(message.contains("was not issued"), "{message}");
+        assert!(message.contains("persist"), "{message}");
     }
 }

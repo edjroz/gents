@@ -5,9 +5,11 @@
 //!
 //! * `RenderedCompletionRequest` is the *capture DTO*. It carries the exact
 //!   provider request body plus the identity, routing, and provenance a
-//!   `RenderedRequest` row needs. It is built at the **transport seam** — the
-//!   last `HttpClientExt` before the network client — and handed to the capture
-//!   sink, which must succeed before the body is forwarded.
+//!   `RenderedRequest` row needs. It is built at a capture seam — HTTP
+//!   providers at the last `HttpClientExt` before the network client,
+//!   process-CLI Completers immediately before spawn — and handed to the
+//!   capture sink, which must succeed before the body is forwarded or the
+//!   CLI is spawned.
 //! * `AssemblyTrace` is the reconstruction manifest. It records the effective
 //!   native messages plus the ordered `ProviderContextReduction` keys that
 //!   produced a sticky request-local projection. `RenderedRequest` remains the
@@ -235,7 +237,7 @@ pub struct RenderedCompletionRequest {
     pub provenance_json: Value,
 }
 
-pub(crate) fn build_rendered_completion_request(
+pub(crate) fn build_rendered_completion_request_at_seam(
     context: &RenderedRequestContext,
     capture_scope: &str,
     source: RenderedRequestSource,
@@ -244,6 +246,7 @@ pub(crate) fn build_rendered_completion_request(
     attempt: u32,
     assembly_trace: AssemblyTrace,
     components: RenderedRequestComponents,
+    capture_seam: CaptureSeam,
 ) -> Result<RenderedCompletionRequest> {
     let RenderedRequestComponents {
         request_json,
@@ -261,11 +264,12 @@ pub(crate) fn build_rendered_completion_request(
         turn_index,
         attempt,
     )?;
-    let manifest = ProvenanceManifest::captured_only(
+    let manifest = ProvenanceManifest::captured_only_at(
         capture_scope.to_string(),
         provider_endpoint,
         admission_join_for_scope(capture_scope),
         assembly_trace.clone(),
+        capture_seam,
     );
     let provenance_json = canonical_json(
         &serde_json::to_value(&manifest).context("encoding rendered-request provenance")?,
@@ -462,7 +466,7 @@ mod tests {
         trace: AssemblyTrace,
         components: RenderedRequestComponents,
     ) -> RenderedCompletionRequest {
-        build_rendered_completion_request(
+        build_rendered_completion_request_at_seam(
             &context(),
             "inference.1",
             RenderedRequestSource::OpenAiChatCompletions,
@@ -471,6 +475,7 @@ mod tests {
             attempt,
             trace,
             components,
+            CaptureSeam::TransportBody,
         )
         .expect("rendered request")
     }
@@ -821,6 +826,38 @@ mod tests {
 
         assert_eq!(rendered.provenance_json["capture_seam"], "transport_body");
         assert_eq!(rendered.provenance_json["capture_scope"], "inference.1");
+    }
+
+    #[test]
+    fn process_cli_seam_is_recorded_positively() {
+        let rendered = build_rendered_completion_request_at_seam(
+            &context(),
+            "inference.1",
+            RenderedRequestSource::ClaudeCliSubscription,
+            Some("claude-cli://subscription".to_string()),
+            0,
+            0,
+            empty_trace(),
+            RenderedRequestComponents::from_provider_body(
+                json!({
+                    "model": "claude-sonnet-5",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [],
+                }),
+                RenderedRequestSource::ClaudeCliSubscription,
+            ),
+            CaptureSeam::ProcessCli,
+        )
+        .expect("rendered request");
+
+        assert_eq!(
+            rendered.source,
+            RenderedRequestSource::ClaudeCliSubscription
+        );
+        assert_eq!(rendered.provenance_json["capture_seam"], "process_cli");
+        assert_eq!(rendered.model_name, "claude-sonnet-5");
+        assert_eq!(rendered.messages_json[0]["role"], "user");
+        assert_eq!(rendered.tools_json, json!([]));
     }
 
     /// Outside an admission scope (the one-shot situation) there is no join,

@@ -54,16 +54,23 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
 
 /// The provider wire shape a captured body was actually sent on.
 ///
-/// Derived from the request path the transport posted to, never from behavior
-/// configuration: configuration says what the runtime *intended*, and this
-/// column has to say what the provider *received*. The two can disagree — a
-/// backend document can be edited between reconcile and send.
+/// For HTTP providers this is derived from the request path the transport
+/// posted to, never from behavior configuration: configuration says what the
+/// runtime *intended*, and this column has to say what the provider *received*.
+/// The two can disagree — a backend document can be edited between reconcile
+/// and send.
+///
+/// `ClaudeCliSubscription` is the non-HTTP exception: there is no request path,
+/// so the in-process Completer stamps this source when it captures the prompt
+/// it is about to hand to the Claude CLI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderedRequestSource {
     #[serde(rename = "openai_responses")]
     OpenAiResponses,
     #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
+    #[serde(rename = "claude_cli_subscription")]
+    ClaudeCliSubscription,
 }
 
 impl RenderedRequestSource {
@@ -80,7 +87,7 @@ impl RenderedRequestSource {
     pub fn messages_field(self) -> &'static str {
         match self {
             Self::OpenAiResponses => "input",
-            Self::OpenAiChatCompletions => "messages",
+            Self::OpenAiChatCompletions | Self::ClaudeCliSubscription => "messages",
         }
     }
 }
@@ -645,13 +652,16 @@ pub enum ProvenanceStatus {
 ///
 /// Recorded positively so a reader never has to infer it. A row that says
 /// `TransportBody` is claiming the stronger thing: these are the bytes the HTTP
-/// client forwarded, after every provider-specific rewrite.
+/// client forwarded, after every provider-specific rewrite. A row that says
+/// `ProcessCli` was captured by an in-process Completer immediately before it
+/// spawned a local CLI (no HTTP body exists).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSeam {
-    /// The last `HttpClientExt` before the network client. The only seam
-    /// version 1 emits.
+    /// The last `HttpClientExt` before the network client.
     TransportBody,
+    /// In-process Completer argv/prompt seam (Claude CLI subscription).
+    ProcessCli,
 }
 
 /// The admission identity of the provider call this capture preceded: the
@@ -714,11 +724,27 @@ impl ProvenanceManifest {
         admission: Option<AdmissionJoin>,
         assembly_trace: AssemblyTrace,
     ) -> Self {
+        Self::captured_only_at(
+            capture_scope,
+            provider_endpoint,
+            admission,
+            assembly_trace,
+            CaptureSeam::TransportBody,
+        )
+    }
+
+    pub fn captured_only_at(
+        capture_scope: String,
+        provider_endpoint: Option<String>,
+        admission: Option<AdmissionJoin>,
+        assembly_trace: AssemblyTrace,
+        capture_seam: CaptureSeam,
+    ) -> Self {
         Self {
             manifest_version: PROVENANCE_MANIFEST_VERSION,
             status: ProvenanceStatus::CapturedOnly,
             status_reason: Self::CAPTURED_ONLY_REASON.to_string(),
-            capture_seam: CaptureSeam::TransportBody,
+            capture_seam,
             capture_scope,
             provider_endpoint,
             admission,
@@ -1032,6 +1058,42 @@ mod tests {
             ProvenanceManifest::parse(r#"{"manifest_version":2}"#),
             Err(ProvenanceParseError::InvalidManifest(_))
         ));
+    }
+
+    #[test]
+    fn claude_cli_subscription_is_not_an_http_completion_path() {
+        assert_eq!(
+            RenderedRequestSource::ClaudeCliSubscription.messages_field(),
+            "messages"
+        );
+        assert_eq!(
+            serde_json::to_value(RenderedRequestSource::ClaudeCliSubscription).unwrap(),
+            json!("claude_cli_subscription")
+        );
+        // Process-CLI Completers stamp the source themselves; there is no HTTP
+        // path that classifies as this wire shape.
+        assert_eq!(RenderedRequestSource::for_request_path("/claude"), None);
+        assert_eq!(
+            RenderedRequestSource::for_request_path("claude-cli://subscription"),
+            None
+        );
+    }
+
+    #[test]
+    fn process_cli_seam_round_trips_in_the_manifest() {
+        let manifest = ProvenanceManifest::captured_only_at(
+            "inference.1".to_string(),
+            Some("claude-cli://subscription".to_string()),
+            None,
+            AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, Vec::new()),
+            CaptureSeam::ProcessCli,
+        );
+        let serialized = serde_json::to_string(&manifest).expect("serialize manifest");
+        assert!(serialized.contains("\"capture_seam\":\"process_cli\""));
+        assert_eq!(
+            ProvenanceManifest::parse(&serialized).expect("reader accepts process-CLI manifest"),
+            ParsedProvenance::Manifest(Box::new(manifest))
+        );
     }
 
     /// What the producer writes, the reader reads — through the version gate,
