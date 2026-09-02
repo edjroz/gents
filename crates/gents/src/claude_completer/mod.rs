@@ -58,80 +58,125 @@ pub enum CompleterParseError {
     EmptyAssistantText,
 }
 
-/// Fail-closed parse of Claude Code stream-json JSONL → plain assistant text.
-pub fn parse_stream_jsonl(text: &str) -> Result<String, CompleterParseError> {
-    let mut texts: Vec<String> = Vec::new();
-    let mut saw_tool_use = false;
-    let mut tool_names: Vec<String> = Vec::new();
-    let mut result_text = String::new();
+/// Incremental fail-closed parser for Claude Code `--output-format stream-json`.
+///
+/// One JSONL line at a time so the Completer can yield assistant text before
+/// the child process exits. `parse_stream_jsonl` is the buffered oracle over
+/// the same state machine. `tool_use` still fail-closes (A2b); A2c will map
+/// gents names on this type.
+#[derive(Debug, Default)]
+pub struct StreamJsonlState {
+    texts: Vec<String>,
+    tool_names: Vec<String>,
+    result_text: String,
+    line: usize,
+}
 
-    for (lineno, raw) in text.lines().enumerate() {
+impl StreamJsonlState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Push one JSONL line. `Some(text)` is newly extracted assistant text
+    /// (content-block `type=text` only — same sources as the buffered parser).
+    pub fn push_line(&mut self, raw: &str) -> Result<Option<String>, CompleterParseError> {
+        self.line += 1;
         let line = raw.trim();
         if line.is_empty() {
-            continue;
+            return Ok(None);
         }
-        let obj: Value = serde_json::from_str(line).map_err(|err| CompleterParseError::InvalidJson {
-            line: lineno + 1,
-            message: err.to_string(),
-        })?;
+        let obj: Value =
+            serde_json::from_str(line).map_err(|err| CompleterParseError::InvalidJson {
+                line: self.line,
+                message: err.to_string(),
+            })?;
         let Some(obj) = obj.as_object() else {
-            continue;
+            return Ok(None);
         };
 
+        let mut line_tool_names = Vec::new();
+        let mut new_text = String::new();
         for block in content_blocks(obj) {
             let Some(block) = block.as_object() else {
                 continue;
             };
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => {
-                    saw_tool_use = true;
                     let name = block
                         .get("name")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown");
-                    tool_names.push(name.to_string());
+                    line_tool_names.push(name.to_string());
                 }
                 Some("text") => {
                     if let Some(t) = block.get("text").and_then(Value::as_str) {
                         if !t.is_empty() {
-                            texts.push(t.to_string());
+                            new_text.push_str(t);
                         }
                     }
                 }
                 _ => {}
             }
         }
+        if !line_tool_names.is_empty() {
+            self.tool_names.extend(line_tool_names);
+            return Err(CompleterParseError::ToolUse {
+                names: if self.tool_names.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    self.tool_names.join(", ")
+                },
+            });
+        }
+        if !new_text.is_empty() {
+            self.texts.push(new_text.clone());
+        }
 
         if obj.get("type").and_then(Value::as_str) == Some("result") {
             if let Some(r) = obj.get("result").and_then(Value::as_str) {
-                result_text = r.to_string();
+                self.result_text = r.to_string();
             }
             if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
                 return Err(CompleterParseError::ResultError {
-                    message: result_text,
+                    message: self.result_text.clone(),
                 });
             }
         }
-    }
 
-    if saw_tool_use {
-        let names = if tool_names.is_empty() {
-            "unknown".to_string()
+        if new_text.is_empty() {
+            Ok(None)
         } else {
-            tool_names.join(", ")
-        };
-        return Err(CompleterParseError::ToolUse { names });
+            Ok(Some(new_text))
+        }
     }
 
-    let mut out = texts.concat();
-    out = out.trim().to_string();
-    if out.is_empty() {
-        out = result_text.trim().to_string();
+    /// Finish after stdout EOF. Empty assistant text fail-closes; `result`
+    /// text is the fallback when no content-block text was seen.
+    pub fn finish(self) -> Result<String, CompleterParseError> {
+        if !self.tool_names.is_empty() {
+            return Err(CompleterParseError::ToolUse {
+                names: self.tool_names.join(", "),
+            });
+        }
+        let mut out = self.texts.concat();
+        out = out.trim().to_string();
+        if out.is_empty() {
+            out = self.result_text.trim().to_string();
+        }
+        if out.is_empty() {
+            return Err(CompleterParseError::EmptyAssistantText);
+        }
+        Ok(out)
     }
-    if out.is_empty() {
-        return Err(CompleterParseError::EmptyAssistantText);
+}
+
+/// Fail-closed parse of Claude Code stream-json JSONL → plain assistant text.
+pub fn parse_stream_jsonl(text: &str) -> Result<String, CompleterParseError> {
+    let mut state = StreamJsonlState::new();
+    for line in text.lines() {
+        let _ = state.push_line(line)?;
     }
-    Ok(out)
+    state.finish()
 }
 
 fn content_blocks<'a>(obj: &'a serde_json::Map<String, Value>) -> &'a [Value] {
@@ -147,7 +192,9 @@ fn content_blocks<'a>(obj: &'a serde_json::Map<String, Value>) -> &'a [Value] {
 }
 
 /// Remove Anthropic/cloud override vars from an inherited environment map.
-pub fn sanitize_child_env<K, V>(env: impl IntoIterator<Item = (K, V)>) -> HashMap<OsString, OsString>
+pub fn sanitize_child_env<K, V>(
+    env: impl IntoIterator<Item = (K, V)>,
+) -> HashMap<OsString, OsString>
 where
     K: Into<OsString>,
     V: Into<OsString>,
@@ -155,11 +202,7 @@ where
     let strip: std::collections::HashSet<&str> = STRIPPED_ENV_VARS.iter().copied().collect();
     env.into_iter()
         .map(|(k, v)| (k.into(), v.into()))
-        .filter(|(k, _)| {
-            k.to_str()
-                .map(|s| !strip.contains(s))
-                .unwrap_or(true)
-        })
+        .filter(|(k, _)| k.to_str().map(|s| !strip.contains(s)).unwrap_or(true))
         .collect()
 }
 
@@ -167,10 +210,7 @@ where
 ///
 /// When `model` is `Some(non-empty)`, forwards `--model <id>` so Path A can
 /// select among Claude full model IDs instead of the CLI seat default.
-pub fn completer_argv(
-    prompt: impl AsRef<OsStr>,
-    model: Option<&str>,
-) -> Vec<OsString> {
+pub fn completer_argv(prompt: impl AsRef<OsStr>, model: Option<&str>) -> Vec<OsString> {
     let mut argv = vec![
         OsString::from("claude"),
         OsString::from("-p"),
@@ -209,6 +249,49 @@ mod tests {
     }
 
     #[test]
+    fn incremental_parser_matches_buffered_oracle_on_fixtures() {
+        for fixture in [ASSISTANT_OK, TOOL_USE, EMPTY_RESULT] {
+            let buffered = parse_stream_jsonl(fixture);
+            let mut state = StreamJsonlState::new();
+            let incremental = (|| {
+                for line in fixture.lines() {
+                    let _ = state.push_line(line)?;
+                }
+                state.finish()
+            })();
+            assert_eq!(incremental, buffered, "fixture mismatch");
+        }
+        let jsonl =
+            r#"{"type":"result","subtype":"success","result":"Not logged in","is_error":true}"#;
+        let buffered = parse_stream_jsonl(jsonl);
+        let mut state = StreamJsonlState::new();
+        let incremental = state.push_line(jsonl).and_then(|_| state.finish());
+        assert_eq!(incremental, buffered);
+    }
+
+    #[test]
+    fn incremental_parser_yields_text_before_result_line() {
+        let mut state = StreamJsonlState::new();
+        let first = state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"po"}]}}"#,
+            )
+            .expect("assistant line");
+        assert_eq!(first.as_deref(), Some("po"));
+        let second = state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ng"}]}}"#,
+            )
+            .expect("second assistant line");
+        assert_eq!(second.as_deref(), Some("ng"));
+        let result = state
+            .push_line(r#"{"type":"result","subtype":"success","result":"pong","is_error":false}"#)
+            .expect("result line");
+        assert_eq!(result, None);
+        assert_eq!(state.finish().expect("finish"), "pong");
+    }
+
+    #[test]
     fn rejects_tool_use_fixture() {
         let err = parse_stream_jsonl(TOOL_USE).expect_err("tool_use must fail closed");
         match err {
@@ -225,7 +308,8 @@ mod tests {
 
     #[test]
     fn rejects_result_is_error() {
-        let jsonl = r#"{"type":"result","subtype":"success","result":"Not logged in","is_error":true}"#;
+        let jsonl =
+            r#"{"type":"result","subtype":"success","result":"Not logged in","is_error":true}"#;
         let err = parse_stream_jsonl(jsonl).expect_err("is_error");
         match err {
             CompleterParseError::ResultError { message } => {
@@ -276,7 +360,10 @@ mod tests {
         assert!(as_str.contains(&"stream-json"));
         assert!(!as_str.iter().any(|a| *a == "--bare"));
         assert!(!as_str.iter().any(|a| *a == "--model"));
-        let tools_idx = as_str.iter().position(|a| *a == "--tools").expect("--tools");
+        let tools_idx = as_str
+            .iter()
+            .position(|a| *a == "--tools")
+            .expect("--tools");
         assert_eq!(as_str[tools_idx + 1], "");
         assert_eq!(*as_str.last().unwrap(), "Reply with exactly: pong");
     }

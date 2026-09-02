@@ -8,17 +8,18 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
-use futures::stream;
+use futures::StreamExt;
 use rig::client::CompletionClient;
 use rig::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse, Usage,
 };
 use rig::one_or_many::OneOrMany;
 use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::claude_completer::{completer_argv, parse_stream_jsonl, sanitize_child_env};
+use crate::claude_completer::{completer_argv, sanitize_child_env, StreamJsonlState};
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
 ///
@@ -134,7 +135,20 @@ impl CompletionModel for ClaudeSubscriptionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
-        let text = complete_text(&self.model, &request).await?;
+        let mut stream = self.stream(request).await?;
+        let mut text = String::new();
+        while let Some(item) = stream.next().await {
+            match item? {
+                rig::streaming::StreamedAssistantContent::Text(chunk) => text.push_str(&chunk.text),
+                rig::streaming::StreamedAssistantContent::Final(_) => break,
+                _ => {}
+            }
+        }
+        if text.trim().is_empty() {
+            return Err(CompletionError::ProviderError(
+                "completer returned empty assistant text".to_string(),
+            ));
+        }
         Ok(CompletionResponse {
             choice: OneOrMany::one(rig::completion::AssistantContent::text(text)),
             usage: Usage::new(),
@@ -147,21 +161,17 @@ impl CompletionModel for ClaudeSubscriptionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
-        let text = complete_text(&self.model, &request).await?;
-        let items: Vec<Result<RawStreamingChoice<()>, CompletionError>> = vec![
-            Ok(RawStreamingChoice::Message(text)),
-            Ok(RawStreamingChoice::FinalResponse(())),
-        ];
-        Ok(StreamingCompletionResponse::stream(Box::pin(stream::iter(
-            items,
-        ))))
+        let (child, label) = spawn_completer(&self.model, &request).await?;
+        Ok(StreamingCompletionResponse::stream(Box::pin(
+            stream_child_stdout(child, label),
+        )))
     }
 }
 
-async fn complete_text(
+async fn spawn_completer(
     model: &str,
     request: &CompletionRequest,
-) -> Result<String, CompletionError> {
+) -> Result<(tokio::process::Child, String), CompletionError> {
     let seat = require_process_seat()?;
     if !request.tools.is_empty() {
         warn!(
@@ -182,7 +192,20 @@ async fn complete_text(
     capture_claude_cli_request(model, &prompt, request).await?;
 
     if let Some(fake) = &seat.fake_completer {
-        return run_fake_completer(fake, &prompt).await;
+        let child = Command::new(fake)
+            .arg(&prompt)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|err| {
+                CompletionError::ProviderError(format!(
+                    "spawn fake completer {}: {err}",
+                    fake.display()
+                ))
+            })?;
+        return Ok((child, format!("fake completer {}", fake.display())));
     }
 
     if !crate::claude_completer::live_claude_allowed(seat.write_approved) {
@@ -192,7 +215,150 @@ async fn complete_text(
         ));
     }
 
-    run_live_completer(&seat, model, &prompt).await
+    let mut argv = completer_argv(&prompt, Some(model));
+    if let Some(first) = argv.first_mut() {
+        *first = seat.claude_bin.as_os_str().to_os_string();
+    }
+
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .current_dir(&seat.workdir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env_clear()
+        .envs(sanitize_child_env(std::env::vars_os()))
+        .env("CLAUDE_CONFIG_DIR", &seat.config_dir)
+        .env("CLAUDE_WRITE_APPROVED", "1");
+    for key in crate::claude_completer::STRIPPED_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let child = cmd.spawn().map_err(|err| {
+        CompletionError::ProviderError(format!("spawn {}: {err}", seat.claude_bin.display()))
+    })?;
+    Ok((child, seat.claude_bin.display().to_string()))
+}
+
+fn stream_child_stdout(
+    mut child: tokio::process::Child,
+    label: String,
+) -> impl futures::Stream<Item = Result<RawStreamingChoice<()>, CompletionError>> {
+    async_stream::stream! {
+        let Some(stdout) = child.stdout.take() else {
+            yield Err(CompletionError::ProviderError(format!(
+                "{label} spawned without stdout pipe"
+            )));
+            return;
+        };
+        let stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = stderr {
+                let _ = tokio::io::copy(&mut pipe, &mut buf).await;
+            }
+            buf
+        });
+
+        let mut lines = BufReader::new(stdout).lines();
+        let mut state = StreamJsonlState::new();
+        let mut jsonl_mode: Option<bool> = None;
+        let mut plain = String::new();
+        let mut yielded_text = false;
+
+        let read_error = loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if jsonl_mode.is_none() {
+                        let trimmed = line.trim_start();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        jsonl_mode = Some(trimmed.starts_with('{'));
+                    }
+                    if jsonl_mode == Some(true) {
+                        match state.push_line(&line) {
+                            Ok(Some(text)) => {
+                                yielded_text = true;
+                                yield Ok(RawStreamingChoice::Message(text));
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = child.start_kill();
+                                yield Err(CompletionError::ProviderError(error.to_string()));
+                                return;
+                            }
+                        }
+                    } else if jsonl_mode == Some(false) {
+                        if !plain.is_empty() {
+                            plain.push('\n');
+                        }
+                        plain.push_str(&line);
+                    }
+                }
+                Ok(None) => break None,
+                Err(error) => break Some(error),
+            }
+        };
+        if let Some(error) = read_error {
+            let _ = child.start_kill();
+            yield Err(CompletionError::ProviderError(format!(
+                "{label} stdout: {error}"
+            )));
+            return;
+        }
+
+        let status = match child.wait().await {
+            Ok(status) => status,
+            Err(error) => {
+                yield Err(CompletionError::ProviderError(format!(
+                    "wait {label}: {error}"
+                )));
+                return;
+            }
+        };
+        let stderr_buf = stderr_task.await.unwrap_or_else(|_| Vec::new());
+        let stderr = String::from_utf8_lossy(&stderr_buf);
+        if !stderr.trim().is_empty() {
+            warn!(
+                completer = %label,
+                stderr = %stderr.trim(),
+                "claude completer stderr"
+            );
+        }
+        if !status.success() {
+            yield Err(CompletionError::ProviderError(format!(
+                "{label} exit {}: {}",
+                status.code().unwrap_or(-1),
+                stderr.trim().chars().take(500).collect::<String>()
+            )));
+            return;
+        }
+
+        if jsonl_mode == Some(true) {
+            match state.finish() {
+                Ok(text) => {
+                    if !yielded_text {
+                        yield Ok(RawStreamingChoice::Message(text));
+                    }
+                    yield Ok(RawStreamingChoice::FinalResponse(()));
+                }
+                Err(error) => {
+                    yield Err(CompletionError::ProviderError(error.to_string()));
+                }
+            }
+        } else {
+            let text = plain.trim().to_string();
+            if text.is_empty() {
+                yield Err(CompletionError::ProviderError(format!(
+                    "{label} returned empty assistant text"
+                )));
+                return;
+            }
+            yield Ok(RawStreamingChoice::Message(text));
+            yield Ok(RawStreamingChoice::FinalResponse(()));
+        }
+    }
 }
 
 async fn capture_claude_cli_request(
@@ -223,95 +389,6 @@ async fn capture_claude_cli_request(
             "rendered-request capture failed before Claude CLI spawn: {error:#}"
         ))
     })
-}
-
-async fn run_fake_completer(fake: &Path, prompt: &str) -> Result<String, CompletionError> {
-    let output = Command::new(fake)
-        .arg(prompt)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|err| {
-            CompletionError::ProviderError(format!(
-                "spawn fake completer {}: {err}",
-                fake.display()
-            ))
-        })?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(CompletionError::ProviderError(format!(
-            "fake completer exit {}: {}",
-            output.status.code().unwrap_or(-1),
-            err.trim()
-        )));
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        return Err(CompletionError::ProviderError(
-            "fake completer returned empty assistant text".to_string(),
-        ));
-    }
-    Ok(text)
-}
-
-async fn run_live_completer(
-    seat: &ClaudeSeatConfig,
-    model: &str,
-    prompt: &str,
-) -> Result<String, CompletionError> {
-    let mut argv = completer_argv(prompt, Some(model));
-    if let Some(first) = argv.first_mut() {
-        *first = seat.claude_bin.as_os_str().to_os_string();
-    }
-
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .current_dir(&seat.workdir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear()
-        .envs(sanitize_child_env(std::env::vars_os()))
-        .env("CLAUDE_CONFIG_DIR", &seat.config_dir)
-        .env("CLAUDE_WRITE_APPROVED", "1");
-    for key in crate::claude_completer::STRIPPED_ENV_VARS {
-        cmd.env_remove(key);
-    }
-
-    let output = cmd.output().await.map_err(|err| {
-        CompletionError::ProviderError(format!("spawn {}: {err}", seat.claude_bin.display()))
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.trim().is_empty() {
-        warn!(
-            stderr = %stderr.trim(),
-            "claude completer stderr"
-        );
-    }
-    if !output.status.success() {
-        return Err(CompletionError::ProviderError(format!(
-            "completer exit {}: {}",
-            output.status.code().unwrap_or(-1),
-            stderr.trim().chars().take(500).collect::<String>()
-        )));
-    }
-
-    let text = if stdout
-        .lines()
-        .any(|line| line.trim_start().starts_with('{'))
-    {
-        parse_stream_jsonl(&stdout)
-            .map_err(|err| CompletionError::ProviderError(err.to_string()))?
-    } else {
-        stdout.trim().to_string()
-    };
-    if text.trim().is_empty() {
-        return Err(CompletionError::ProviderError(
-            "completer returned empty assistant text".to_string(),
-        ));
-    }
-    Ok(text)
 }
 
 /// Flatten a rig CompletionRequest into the text prompt the CLI completer expects.
@@ -380,6 +457,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn workspace_tempdir(label: &str) -> PathBuf {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -400,6 +478,27 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
         path
+    }
+
+    /// JSONL fake that emits one assistant line, sleeps, then the rest — used
+    /// to prove the Completer yields before the child exits.
+    fn write_delayed_jsonl_fake(dir: &Path) -> PathBuf {
+        let py = dir.join("fake-completer.py");
+        std::fs::write(
+            &py,
+            r#"
+import sys, time
+def emit(line):
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+emit('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"po"}]}}')
+time.sleep(1.2)
+emit('{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ng"}]}}')
+emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
+"#,
+        )
+        .expect("write python fake");
+        write_fake_completer(dir, &format!("exec python3 -u '{}' \"$@\"", py.display()))
     }
 
     #[tokio::test]
@@ -503,6 +602,55 @@ mod tests {
         assert_eq!(
             captured[0].request_json.get("tools"),
             Some(&serde_json::json!([]))
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_yields_jsonl_text_before_completer_exits() {
+        let temp = workspace_tempdir("process-cli-stream-delay");
+        let fake = write_delayed_jsonl_fake(&temp);
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let started = Instant::now();
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(ping_request()).await.expect("stream");
+        use futures::StreamExt;
+        use rig::streaming::StreamedAssistantContent;
+        let first = loop {
+            match stream.next().await.expect("item").expect("chunk") {
+                StreamedAssistantContent::Text(text) => break text.text,
+                StreamedAssistantContent::Final(_) => panic!("final before text"),
+                _ => {}
+            }
+        };
+        let first_wait = started.elapsed();
+        assert_eq!(first, "po");
+        assert!(
+            first_wait < Duration::from_millis(800),
+            "first JSONL chunk must arrive before the 1.2s completer sleep, waited {first_wait:?}"
+        );
+
+        let mut rest = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("chunk") {
+                StreamedAssistantContent::Text(text) => rest.push(text.text),
+                StreamedAssistantContent::Final(_) => break,
+                _ => {}
+            }
+        }
+        assert_eq!(rest.join(""), "ng");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1000),
+            "completer sleep must still run after the first yield"
         );
     }
 
