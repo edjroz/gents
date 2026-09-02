@@ -271,6 +271,10 @@ in-process to the Claude CLI completer (placeholder endpoint
 `InferenceBackend.models[]` (default behavior model `claude-sonnet-5`; catalog
 also lists `claude-opus-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`).
 Live Claude requires `--claude-write-approved` (refuse-closed otherwise).
+That flag means **this process may bill the Claude subscription**. It is **off
+by default** and is **not** a production default. Numbered human write approval
+is still required before setting it. Do not leave a prod `gents server`
+running with the flag unless you intend every Claude-backed turn to spend.
 
 Design notes:
 
@@ -344,6 +348,7 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 | Probe `logged_in=false` | Seat missing / wrong `--config-dir` | Re-run login against the intended config dir (write-gated) |
 | Completer refuse / missing seat | Server started without `--claude-config-dir` | Restart with `--claude-config-dir` pointing at the seat |
 | Live Claude refused | Write gate closed | Pass `--claude-write-approved` only after numbered approval |
+| Unexpected Claude spend | Server started with `--claude-write-approved` and a Claude-backed behavior | Restart **without** the flag; keep default behavior on Grok |
 | Completer errors on `tool_use` | Tools leaked into Claude path | Keep text-only; do not enable Claude tools |
 | Expecting DefraDB Claude credential | Wrong mental model (Grok/Codex-shaped) | Path A/A2b never upserts `OAuthCredential` for Claude |
 | Fleet probe demotes Claude | Old binary still HTTP-probes the placeholder | Rebuild/restart A2b+; `ClaudeCliSubscription` skips fleet HTTP probes |
@@ -364,13 +369,21 @@ together:
    `claude-cli://subscription` and the four full Claude model IDs. Keep the
    existing Grok/`XaiGrokOAuth` backend. Do **not** create a Claude
    `OAuthCredential`. Do **not** point Claude at `http://127.0.0.1:8787/v1`.
-2. Start the server with the process seat:
+2. Start the server with the process seat. Default (no spend):
 
    ```sh
    gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
-   # live:
+   ```
+
+   Live Claude is opt-in after numbered write approval. Do **not** treat
+   `--claude-write-approved` as the usual prod command line:
+
+   ```sh
    gents server --claude-config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
    ```
+
+   Keep the **default behavior** on Grok unless you explicitly point a
+   behavior at the Claude backend.
 
 3. Chat with one surface:
 

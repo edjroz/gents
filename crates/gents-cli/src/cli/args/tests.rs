@@ -834,7 +834,7 @@ fn claude_login_and_auth_probe_parse_and_require_config_dir() {
 
 #[test]
 fn every_deprecated_path_warns() {
-    use crate::cli::deprecations::{deprecation_warning, DEPRECATED};
+    use crate::cli::deprecations::{DEPRECATED, deprecation_warning};
 
     for (path, replacement) in DEPRECATED {
         let mut argv = vec!["gents".to_string()];
@@ -913,3 +913,33 @@ fn server_parses_a2b_claude_seat_flags() {
     );
 }
 
+#[test]
+fn claude_write_gate_help_is_opt_in_not_prod_default() {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let server_help = cmd
+        .find_subcommand_mut("server")
+        .expect("server")
+        .render_long_help()
+        .to_string();
+    assert!(
+        server_help.contains("--claude-write-approved"),
+        "{server_help}"
+    );
+    assert!(
+        server_help.contains("Off by default") && server_help.contains("not a production default"),
+        "{server_help}"
+    );
+    assert!(
+        server_help.contains("bill"),
+        "server help should say the flag may bill Claude: {server_help}"
+    );
+
+    let mut cmd = Cli::command();
+    let login_help = cmd
+        .find_subcommand_mut("claude-login")
+        .expect("claude-login")
+        .render_long_help()
+        .to_string();
+    assert!(login_help.contains("Off by default"), "{login_help}");
+}

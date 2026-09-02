@@ -303,6 +303,13 @@ async fn spawn_completer(
         ));
     }
 
+    tracing::info!(
+        model = %model,
+        config_dir = %seat.config_dir.display(),
+        claude_bin = %seat.claude_bin.display(),
+        "live Claude CLI spawn (write gate open; this process may bill Claude)"
+    );
+
     let mut argv = completer_argv(&prompt, Some(model));
     if let Some(first) = argv.first_mut() {
         *first = seat.claude_bin.as_os_str().to_os_string();

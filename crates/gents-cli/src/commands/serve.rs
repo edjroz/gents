@@ -5,24 +5,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use axum::{http::Uri, routing::get, Router};
+use axum::{Router, http::Uri, routing::get};
 use gents::defra_node::EmbeddedNode;
 use gents::{
     AgentIdentity, DocumentRuntimeOptions, Gents, KeyIdentity, McpPool, ProcessLifecycleObserver,
     ProcessLifecycleState, ToolCeiling,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::cli::*;
-use crate::commands::codex_shim::{bind_codex_shim, CodexShimBindArgs};
+use crate::commands::codex_shim::{CodexShimBindArgs, bind_codex_shim};
 use crate::http::runtime_contract_router;
 use crate::shared::{P2pAdmissionState, *};
 use crate::{
-    default_data_dir, default_key_path, display_host, format_tool_ceiling, parse_cli_tool_arg,
-    print_json, read_init_config, resolve_home_dir, server_start_failure_hint, write_runtime_state,
-    DEFAULT_AGENT_NAME,
+    DEFAULT_AGENT_NAME, default_data_dir, default_key_path, display_host, format_tool_ceiling,
+    parse_cli_tool_arg, print_json, read_init_config, resolve_home_dir, server_start_failure_hint,
+    write_runtime_state,
 };
 use gents::codex_shim_binding::{ShimBinding, ShimUnboundReason};
 
@@ -119,12 +119,19 @@ fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
         args.claude_bin.clone(),
         args.claude_fake_completer.clone(),
     );
-    std::fs::create_dir_all(&seat.workdir).with_context(|| {
-        format!(
-            "creating Claude workdir {}",
-            seat.workdir.display()
-        )
-    })?;
+    std::fs::create_dir_all(&seat.workdir)
+        .with_context(|| format!("creating Claude workdir {}", seat.workdir.display()))?;
+    if seat.write_approved {
+        tracing::info!(
+            config_dir = %seat.config_dir.display(),
+            "Claude write gate OPEN: this process may bill Claude until restarted without --claude-write-approved"
+        );
+    } else {
+        tracing::info!(
+            config_dir = %seat.config_dir.display(),
+            "Claude seat installed; live CLI spawns refuse-closed (pass --claude-write-approved only after numbered write approval)"
+        );
+    }
     gents::claude_subscription::install_process_seat(Some(seat));
     Ok(())
 }
@@ -159,7 +166,7 @@ async fn apply_pack_after_ready(
 ) -> Result<Value> {
     use crate::cli::ManifestAgentDidBindingArg;
     use crate::commands::config::apply::apply_bound_desired_manifest;
-    use crate::commands::config::binding::{load_bound_manifest, ManifestBindingOptions};
+    use crate::commands::config::binding::{ManifestBindingOptions, load_bound_manifest};
     use crate::commands::schema::apply_pack_schemas_if_present;
     use crate::config_writes::ConfigAccess;
 
@@ -1344,19 +1351,18 @@ mod shim_host_tests {
             "secret"
         );
         assert!(read_codex_shim_auth_token_with("GENTS_TOKEN", |_| Ok(" ".to_string())).is_err());
-        assert!(read_codex_shim_auth_token_with("GENTS_TOKEN", |_| {
-            Err(std::env::VarError::NotPresent)
-        })
-        .is_err());
+        assert!(
+            read_codex_shim_auth_token_with("GENTS_TOKEN", |_| {
+                Err(std::env::VarError::NotPresent)
+            })
+            .is_err()
+        );
     }
 
     #[test]
     fn shim_launch_command_references_the_token_environment_variable() {
         assert_eq!(
-            codex_shim_launch_command(
-                "wss://agent.example:443/",
-                Some("GENTS_REMOTE_TOKEN")
-            ),
+            codex_shim_launch_command("wss://agent.example:443/", Some("GENTS_REMOTE_TOKEN")),
             "gents codex --remote wss://agent.example:443/ --remote-auth-token-env GENTS_REMOTE_TOKEN"
         );
     }
@@ -1468,7 +1474,10 @@ mod shim_host_tests {
         ]);
         validate_claude_seat_args(&args).expect("A2b seat flags");
         assert!(args.claude_write_approved);
-        assert_eq!(args.claude_config_dir.as_deref(), Some(config_dir.as_path()));
+        assert_eq!(
+            args.claude_config_dir.as_deref(),
+            Some(config_dir.as_path())
+        );
     }
 
     #[test]
@@ -1503,5 +1512,4 @@ mod shim_host_tests {
         assert!(!seat.write_approved);
         assert_eq!(seat.fake_completer.as_deref(), Some(fake.as_path()));
     }
-
 }

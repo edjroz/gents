@@ -530,10 +530,7 @@ pub(crate) struct ClaudeLoginArgs {
         help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default. Seat stays here; gents does not store Anthropic oat in DefraDB."
     )]
     pub(crate) config_dir: PathBuf,
-    #[arg(
-        long,
-        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
-    )]
+    #[arg(long, help = "Path to Claude CLI binary. Defaults to `claude` on PATH")]
     pub(crate) claude_bin: Option<PathBuf>,
     #[arg(
         long,
@@ -543,7 +540,7 @@ pub(crate) struct ClaudeLoginArgs {
     #[arg(
         long,
         default_value_t = false,
-        help = "Refuse-closed write gate for live Claude login. Required after an explicit numbered write approval; --dry-run bypasses this."
+        help = "Open the live Claude login write gate for this command. Off by default. Contacts Anthropic. --dry-run bypasses this. Numbered write approval is still required before setting it."
     )]
     pub(crate) claude_write_approved: bool,
     #[arg(
@@ -564,10 +561,7 @@ pub(crate) struct ClaudeAuthProbeArgs {
         help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default."
     )]
     pub(crate) config_dir: PathBuf,
-    #[arg(
-        long,
-        help = "Path to Claude CLI binary. Defaults to `claude` on PATH"
-    )]
+    #[arg(long, help = "Path to Claude CLI binary. Defaults to `claude` on PATH")]
     pub(crate) claude_bin: Option<PathBuf>,
 }
 
@@ -882,7 +876,7 @@ pub(crate) struct ServeArgs {
     #[arg(
         long,
         default_value_t = false,
-        help = "A2b refuse-closed write gate for live Claude CLI spawns. Required for billable Claude; fake completer bypasses this. Numbered human write approval still required before setting it."
+        help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it. Fake completer bypasses the gate."
     )]
     pub(crate) claude_write_approved: bool,
     #[arg(
