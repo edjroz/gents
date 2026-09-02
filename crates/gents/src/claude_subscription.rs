@@ -96,7 +96,9 @@ pub fn install_process_seat(config: Option<ClaudeSeatConfig>) {
 #[cfg(test)]
 pub(crate) fn lock_process_seat_for_test() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    let guard = LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    crate::claude_messages::install_messages_sse_fixture(None);
+    guard
 }
 
 pub fn process_seat() -> Option<ClaudeSeatConfig> {
@@ -253,6 +255,12 @@ impl CompletionModel for ClaudeSubscriptionModel {
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
         let surface: HashSet<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
+        let seat = require_process_seat()?;
+        if !request.tools.is_empty() && seat.fake_completer.is_none() {
+            let stream =
+                crate::claude_messages::stream_messages(&self.model, &request, surface).await?;
+            return Ok(StreamingCompletionResponse::stream(Box::pin(stream)));
+        }
         let (child, label) = spawn_completer(&self.model, &request).await?;
         Ok(StreamingCompletionResponse::stream(Box::pin(
             stream_child_stdout(child, label, surface),
@@ -1115,6 +1123,76 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
             additional_params: None,
             output_schema: None,
         }
+    }
+
+    fn echo_tool_use_sse() -> String {
+        r#"
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+"#
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn messages_http_fixture_maps_gents_tool_use() {
+        let _guard = lock_process_seat_for_test();
+        let temp = workspace_tempdir("messages-http-echo");
+        crate::claude_messages::install_messages_sse_fixture(Some(echo_tool_use_sse()));
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: None,
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(echo_tool_request()).await.expect("stream");
+        use futures::StreamExt;
+        use rig::streaming::StreamedAssistantContent;
+        let mut calls = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("chunk") {
+                StreamedAssistantContent::ToolCall { tool_call, .. } => {
+                    calls.push((tool_call.id, tool_call.function.name));
+                }
+                StreamedAssistantContent::Final(_) => break,
+                other => panic!("unexpected chunk: {other:?}"),
+            }
+        }
+        assert_eq!(calls, vec![("toolu_1".into(), "echo".into())]);
+    }
+
+    #[tokio::test]
+    async fn messages_http_without_write_approval_is_refused() {
+        let _guard = lock_process_seat_for_test();
+        let temp = workspace_tempdir("messages-http-refuse");
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: None,
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let err = match model.stream(echo_tool_request()).await {
+            Err(err) => err,
+            Ok(_) => panic!("expected live Messages HTTP to refuse without write approval"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("--claude-write-approved"), "{msg}");
     }
 
     #[tokio::test]

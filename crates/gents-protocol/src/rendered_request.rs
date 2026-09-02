@@ -50,6 +50,7 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
         "/chat/completions",
         RenderedRequestSource::OpenAiChatCompletions,
     ),
+    ("/messages", RenderedRequestSource::ClaudeCliSubscription),
 ];
 
 /// The provider wire shape a captured body was actually sent on.
@@ -60,9 +61,9 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
 /// The two can disagree — a backend document can be edited between reconcile
 /// and send.
 ///
-/// `ClaudeCliSubscription` is the non-HTTP exception: there is no request path,
-/// so the in-process Completer stamps this source when it captures the prompt
-/// it is about to hand to the Claude CLI.
+/// `ClaudeCliSubscription` is stamped by the in-process Completer for process-CLI
+/// captures, and by the capturing HTTP transport for C2 Messages posts to
+/// `/v1/messages`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderedRequestSource {
     #[serde(rename = "openai_responses")]
@@ -714,8 +715,7 @@ pub struct ProvenanceManifest {
 }
 
 impl ProvenanceManifest {
-    const CAPTURED_ONLY_REASON: &'static str =
-        "this provenance manifest pins no config or transcript versions, so a \
+    const CAPTURED_ONLY_REASON: &'static str = "this provenance manifest pins no config or transcript versions, so a \
          reconstruction cannot be verified against this capture";
 
     pub fn captured_only(
@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_subscription_is_not_an_http_completion_path() {
+    fn claude_cli_subscription_classifies_messages_http_and_not_process_cli_urls() {
         assert_eq!(
             RenderedRequestSource::ClaudeCliSubscription.messages_field(),
             "messages"
@@ -1070,8 +1070,10 @@ mod tests {
             serde_json::to_value(RenderedRequestSource::ClaudeCliSubscription).unwrap(),
             json!("claude_cli_subscription")
         );
-        // Process-CLI Completers stamp the source themselves; there is no HTTP
-        // path that classifies as this wire shape.
+        assert_eq!(
+            RenderedRequestSource::for_request_path("/v1/messages"),
+            Some(RenderedRequestSource::ClaudeCliSubscription)
+        );
         assert_eq!(RenderedRequestSource::for_request_path("/claude"), None);
         assert_eq!(
             RenderedRequestSource::for_request_path("claude-cli://subscription"),
