@@ -28,6 +28,20 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 const DEFAULT_MAX_TOKENS: u64 = 4096;
 
+/// Keys this path may emit. Sampling (`temperature`, `top_p`, `top_k`) and
+/// `CompletionRequest.additional_params` stay off the wire: live
+/// `claude-sonnet-5` returns 400 "`temperature` is deprecated for this model"
+/// (same class for `top_p` / `top_k`). Grok / OpenAI keep profile sampling on
+/// their own HTTP bodies.
+const MESSAGES_BODY_ALLOWED_KEYS: &[&str] = &[
+    "model",
+    "max_tokens",
+    "stream",
+    "messages",
+    "tools",
+    "system",
+];
+
 fn messages_sse_fixture_slot() -> &'static Mutex<Option<String>> {
     static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
@@ -76,10 +90,21 @@ pub fn build_messages_body(model: &str, request: &CompletionRequest) -> Value {
     {
         body["system"] = json!([{ "type": "text", "text": preamble }]);
     }
-    if let Some(temperature) = request.temperature {
-        body["temperature"] = json!(temperature);
-    }
+    // Do not copy `request.temperature` or merge `request.additional_params`
+    // (`top_p` / `top_k` / seed / penalties ride that map).
+    debug_assert!(
+        messages_body_has_only_allowed_keys(&body),
+        "Claude Messages body grew an unallowlisted key: {body}"
+    );
     body
+}
+
+fn messages_body_has_only_allowed_keys(body: &Value) -> bool {
+    body.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .all(|key| MESSAGES_BODY_ALLOWED_KEYS.contains(&key.as_str()))
+    })
 }
 
 fn anthropic_messages(request: &CompletionRequest) -> Vec<Value> {
@@ -431,8 +456,7 @@ impl HttpClientExt for ClaudeMessagesTransport {
         let body: Bytes = body.into();
         async move {
             if fixture.is_some() {
-                let body: LazyBody<U> =
-                    Box::pin(async { Ok(U::from(Bytes::from_static(b"{}"))) });
+                let body: LazyBody<U> = Box::pin(async { Ok(U::from(Bytes::from_static(b"{}"))) });
                 return Ok(Response::builder().status(200).body(body)?);
             }
             let req = Request::from_parts(parts, body);
@@ -523,6 +547,46 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "echo");
         assert_eq!(body["system"][0]["text"], "You are helpful.");
         assert_eq!(body["messages"][0]["role"], "user");
+        assert_messages_body_has_no_sampling(&body);
+    }
+
+    #[test]
+    fn messages_body_omits_sampling_even_when_request_sets_it() {
+        let mut request = echo_request();
+        request.temperature = Some(0.7);
+        request.additional_params = Some(json!({
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40,
+            "seed": 1,
+            "min_p": 0.05,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1,
+        }));
+        let body = build_messages_body("claude-sonnet-5", &request);
+        assert_messages_body_has_no_sampling(&body);
+        assert_eq!(body["tools"][0]["name"], "echo");
+    }
+
+    fn assert_messages_body_has_no_sampling(body: &Value) {
+        assert!(
+            messages_body_has_only_allowed_keys(body),
+            "unexpected Messages key: {body}"
+        );
+        for forbidden in [
+            "temperature",
+            "top_p",
+            "top_k",
+            "seed",
+            "min_p",
+            "frequency_penalty",
+            "presence_penalty",
+        ] {
+            assert!(
+                body.get(forbidden).is_none(),
+                "{forbidden} must not appear on Claude Messages: {body}"
+            );
+        }
     }
 
     #[test]
