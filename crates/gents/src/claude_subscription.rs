@@ -21,7 +21,8 @@ use tokio::process::Command;
 use tracing::warn;
 
 use crate::claude_completer::{
-    CompleterUsage, StreamJsonlState, completer_argv, sanitize_child_env,
+    CompleterUsage, StreamJsonlState, completer_argv, parse_auth_status_logged_in,
+    sanitize_child_env,
 };
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
@@ -86,7 +87,13 @@ fn process_seat_slot() -> &'static Mutex<Option<ClaudeSeatConfig>> {
 pub fn install_process_seat(config: Option<ClaudeSeatConfig>) {
     *process_seat_slot()
         .lock()
-        .expect("claude process seat mutex poisoned") = config;
+        .unwrap_or_else(|poison| poison.into_inner()) = config;
+}
+
+#[cfg(test)]
+pub(crate) fn lock_process_seat_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
 pub fn process_seat() -> Option<ClaudeSeatConfig> {
@@ -103,6 +110,57 @@ pub fn require_process_seat() -> Result<ClaudeSeatConfig, CompletionError> {
                 .to_string(),
         )
     })
+}
+
+/// Read-only process-local seat probe for BackendHealth.
+///
+/// Spawns `claude auth status --json` under `CLAUDE_CONFIG_DIR`. Never `-p`,
+/// never writes oat. `Ok(())` means the binary ran and `loggedIn` is true.
+pub async fn probe_process_seat_health() -> Result<(), String> {
+    let seat = process_seat().ok_or_else(|| "process seat not installed".to_string())?;
+    probe_seat_auth_status(&seat).await
+}
+
+async fn probe_seat_auth_status(seat: &ClaudeSeatConfig) -> Result<(), String> {
+    let mut cmd = Command::new(&seat.claude_bin);
+    cmd.args(["auth", "status", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env_clear()
+        .envs(sanitize_child_env(std::env::vars_os()))
+        .env("CLAUDE_CONFIG_DIR", &seat.config_dir);
+    for key in crate::claude_completer::STRIPPED_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    let output = cmd
+        .output()
+        .await
+        .map_err(|error| format!("spawn {} auth status: {error}", seat.claude_bin.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Real `claude auth status --json` may exit non-zero when logged out while
+    // still printing JSON. Prefer `loggedIn` over the process status.
+    if let Ok(logged_in) = parse_auth_status_logged_in(stdout.trim()) {
+        return if logged_in {
+            Ok(())
+        } else {
+            Err("loggedIn=false".to_string())
+        };
+    }
+    if !output.status.success() {
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim()
+        } else {
+            stdout.trim()
+        };
+        return Err(format!(
+            "claude auth status exit {}: {detail}",
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    Err(parse_auth_status_logged_in(stdout.trim()).unwrap_err())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -540,6 +598,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn process_cli_capture_claims_armed_scope_before_fake_completer() {
+        let _guard = lock_process_seat_for_test();
         use crate::rendered_request::scope::{
             ambient_arming_sink, pending_is_armed, scope_request, test_scope,
         };
@@ -644,6 +703,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn stream_yields_jsonl_text_before_completer_exits() {
+        let _guard = lock_process_seat_for_test();
         let temp = workspace_tempdir("process-cli-stream-delay");
         let fake = write_delayed_jsonl_fake(&temp);
         install_process_seat(Some(ClaudeSeatConfig {
@@ -693,6 +753,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn stream_reports_result_usage_on_final() {
+        let _guard = lock_process_seat_for_test();
         let temp = workspace_tempdir("process-cli-stream-usage");
         let jsonl = temp.join("stdout.jsonl");
         std::fs::write(
@@ -773,6 +834,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn process_cli_unexplained_send_inside_scope_does_not_spawn() {
+        let _guard = lock_process_seat_for_test();
         use crate::rendered_request::scope::{scope_request, test_scope};
         use crate::rendered_request::{RenderedRequestCaptureSink, RenderedRequestContext};
 
@@ -821,6 +883,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn process_cli_capture_failure_does_not_spawn_fake_completer() {
+        let _guard = lock_process_seat_for_test();
         use crate::rendered_request::scope::{ambient_arming_sink, scope_request, test_scope};
         use crate::rendered_request::{
             AssemblyBuildPath, AssemblyTrace, CaptureScopeKind, RenderedRequestCaptureSink,
@@ -902,6 +965,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn fake_completer_stream_returns_text_without_write_approval() {
+        let _guard = lock_process_seat_for_test();
         let temp = workspace_tempdir("fake-completer-stream");
         let fake = write_fake_completer(&temp, "printf 'pong\\n'");
         install_process_seat(Some(ClaudeSeatConfig {
@@ -948,6 +1012,7 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
 
     #[tokio::test]
     async fn live_path_refuses_without_write_approval() {
+        let _guard = lock_process_seat_for_test();
         let temp = workspace_tempdir("live-refuse");
         install_process_seat(Some(ClaudeSeatConfig {
             config_dir: temp.join("claude-config"),

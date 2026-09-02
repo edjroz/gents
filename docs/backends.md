@@ -20,7 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
-| `ClaudeCliSubscription` (Path A → A2b experimental) | In-process Claude CLI completer (no HTTP `/models`; endpoint placeholder `claude-cli://subscription`) | Claude CLI seat in process-local `--claude-config-dir` (**no** DefraDB `OAuthCredential` / oat) | Stream-json → owned loop SSE | Text-only: completer `--tools ""` + fail-closed on `tool_use`; tools never forwarded | N/A (text completer) | Full Claude model IDs on `InferenceBackend.models[]` (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`); Anthropic/cloud env stripped from child; refuse-closed without `--claude-write-approved` | Completer stdout → owned completion/stream path | Unit/fake completer fixtures; live under Claude write gate |
+| `ClaudeCliSubscription` (Path A → A2b experimental) | In-process Claude CLI completer (no HTTP `/models`; endpoint placeholder `claude-cli://subscription`) | Claude CLI seat in process-local `--claude-config-dir` (**no** DefraDB `OAuthCredential` / oat) | Stream-json → owned loop SSE | Text-only: completer `--tools ""` + fail-closed on `tool_use`; tools never forwarded | N/A (text completer) | Full Claude model IDs on `InferenceBackend.models[]`; Anthropic/cloud env stripped from child; refuse-closed without `--claude-write-approved`; process-local `claude auth status` health (not fleet HTTP) | Completer stdout → owned completion/stream path | Unit/fake completer fixtures; live under Claude write gate |
 
 ## Probe lifecycle and health (#640)
 
@@ -40,10 +40,13 @@ different places:
   and keeps an in-memory `BackendHealthMap`. Hysteresis is K=3 consecutive
   failures to demote to `unhealthy`, one success to promote back (formal
   model: `crates/gents/proofs/Proofs/BackendHealth/`). Backends that
-  `skips_fleet_http_probe()` are never fleet-probed and therefore never
-  demoted — the document status governs them. That set is agent-scoped OAuth
-  (`ChatGptCodex`, `XaiGrokOAuth`; `OAuthCredential` is per-agent) and
-  `ClaudeCliSubscription` (process-local seat; no HTTP `/models`).
+  `skips_fleet_http_probe()` are never HTTP-probed (no `/models` round-trip).
+  Agent-scoped OAuth (`ChatGptCodex`, `XaiGrokOAuth`) is therefore never
+  demoted by this prober — the document status governs them. `ClaudeCliSubscription`
+  is also skipped for HTTP, but this runtime still runs a **process-local**
+  `claude auth status` probe (binary missing or `loggedIn=false` counts as
+  failure; K=3 demotes in `BackendHealthMap` only — the replicated document
+  is not stamped `unhealthy`).
 
 Effective availability is `intent AND NOT measured-unhealthy`: a measured
 demotion removes the backend from admission and marks dependent behaviors
