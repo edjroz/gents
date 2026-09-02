@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}]}}
+{"type":"result","subtype":"success","result":"","is_error":false}

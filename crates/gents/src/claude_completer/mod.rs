@@ -1,12 +1,13 @@
 //! Claude Max subscription completer adapter (Path A).
 //!
-//! Parses Claude Code `--output-format stream-json` JSONL into plain assistant
-//! text and builds a sanitized child-process environment / argv for the CLI.
+//! Parses Claude Code `--output-format stream-json` JSONL into assistant text
+//! and mapped gents `tool_use` events, and builds a sanitized child-process
+//! environment / argv for the CLI. Live argv stays `--tools ""`.
 //!
 //! A2b uses this from the in-process `ClaudeCliSubscription` Completer. The
 //! transitional HTTP `claude-proxy` adapter was deleted in A2b-3.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 
 use serde_json::Value;
@@ -71,18 +72,35 @@ pub enum CompleterParseError {
     InvalidJson { line: usize, message: String },
     #[error("fail-closed: tool_use observed ({names})")]
     ToolUse { names: String },
+    #[error("fail-closed: duplicate tool_use id {id}")]
+    DuplicateToolUseId { id: String },
+    #[error("fail-closed: malformed tool_use at line {line}: {message}")]
+    MalformedToolUse { line: usize, message: String },
     #[error("claude result is_error=true: {message}")]
     ResultError { message: String },
     #[error("fail-closed: empty assistant text / missing result")]
     EmptyAssistantText,
 }
 
+/// Incremental event from one stream-json line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamJsonlEvent {
+    Text(String),
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+}
+
 /// Incremental fail-closed parser for Claude Code `--output-format stream-json`.
 ///
-/// One JSONL line at a time so the Completer can yield assistant text before
-/// the child process exits. `parse_stream_jsonl` is the buffered oracle over
-/// the same state machine. `tool_use` still fail-closes (A2b); A2c will map
-/// gents names on this type.
+/// One JSONL line at a time so the Completer can yield assistant text (and
+/// mapped `tool_use`) before the child process exits. `parse_stream_jsonl` is
+/// the buffered text oracle over the same state machine with an empty surface.
+/// Names on this turn's gents surface map; empty surface, Claude-native, and
+/// unknown names still fail closed (`Bash` is not `bash`).
+///
 /// Token counts from a Claude Code `result.usage` object.
 ///
 /// Field names pinned from a live `stream-json` `result` line
@@ -133,7 +151,11 @@ fn json_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Option<u64> {
 #[derive(Debug, Default)]
 pub struct StreamJsonlState {
     texts: Vec<String>,
-    tool_names: Vec<String>,
+    /// Gents names advertised this turn. Empty = A2b text-only fence.
+    surface: HashSet<String>,
+    mapped: Vec<StreamJsonlEvent>,
+    seen_ids: HashSet<String>,
+    unmapped_names: Vec<String>,
     result_text: String,
     usage: Option<CompleterUsage>,
     line: usize,
@@ -144,13 +166,22 @@ impl StreamJsonlState {
         Self::default()
     }
 
-    /// Push one JSONL line. `Some(text)` is newly extracted assistant text
-    /// (content-block `type=text` only — same sources as the buffered parser).
-    pub fn push_line(&mut self, raw: &str) -> Result<Option<String>, CompleterParseError> {
+    /// Restrict mapped `tool_use` to these gents names. Empty surface fail-closes
+    /// on any `tool_use` (A2b). No aliases: `Bash` is not `bash`.
+    pub fn with_surface(names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            surface: names.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Push one JSONL line. Text and mapped `tool_use` become events; unmapped
+    /// / empty-surface / duplicate / malformed `tool_use` fail closed.
+    pub fn push_line(&mut self, raw: &str) -> Result<Vec<StreamJsonlEvent>, CompleterParseError> {
         self.line += 1;
         let line = raw.trim();
         if line.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let obj: Value =
             serde_json::from_str(line).map_err(|err| CompleterParseError::InvalidJson {
@@ -158,10 +189,13 @@ impl StreamJsonlState {
                 message: err.to_string(),
             })?;
         let Some(obj) = obj.as_object() else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
 
-        let mut line_tool_names = Vec::new();
+        let mut events = Vec::new();
+        let mut line_mapped = Vec::new();
+        let mut line_unmapped = Vec::new();
+        let mut line_ids = HashSet::new();
         let mut new_text = String::new();
         for block in content_blocks(obj) {
             let Some(block) = block.as_object() else {
@@ -169,11 +203,43 @@ impl StreamJsonlState {
             };
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => {
+                    let id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                     let name = block
                         .get("name")
                         .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    line_tool_names.push(name.to_string());
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if id.is_empty() {
+                        return Err(CompleterParseError::MalformedToolUse {
+                            line: self.line,
+                            message: "missing id".to_string(),
+                        });
+                    }
+                    if name.is_empty() {
+                        return Err(CompleterParseError::MalformedToolUse {
+                            line: self.line,
+                            message: "missing name".to_string(),
+                        });
+                    }
+                    if self.seen_ids.contains(&id) || !line_ids.insert(id.clone()) {
+                        return Err(CompleterParseError::DuplicateToolUseId { id });
+                    }
+                    let input = match block.get("input") {
+                        None => Value::Object(serde_json::Map::new()),
+                        Some(value) if value.is_object() => value.clone(),
+                        Some(_) => Value::Object(serde_json::Map::new()),
+                    };
+                    if self.surface.is_empty() || !self.surface.contains(&name) {
+                        line_unmapped.push(name);
+                    } else {
+                        line_mapped.push(StreamJsonlEvent::ToolUse { id, name, input });
+                    }
                 }
                 Some("text") => {
                     if let Some(t) = block.get("text").and_then(Value::as_str) {
@@ -185,18 +251,22 @@ impl StreamJsonlState {
                 _ => {}
             }
         }
-        if !line_tool_names.is_empty() {
-            self.tool_names.extend(line_tool_names);
+        if !line_unmapped.is_empty() {
+            self.unmapped_names.extend(line_unmapped);
             return Err(CompleterParseError::ToolUse {
-                names: if self.tool_names.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    self.tool_names.join(", ")
-                },
+                names: self.unmapped_names.join(", "),
             });
         }
         if !new_text.is_empty() {
             self.texts.push(new_text.clone());
+            events.push(StreamJsonlEvent::Text(new_text));
+        }
+        for event in line_mapped {
+            if let StreamJsonlEvent::ToolUse { id, .. } = &event {
+                self.seen_ids.insert(id.clone());
+            }
+            self.mapped.push(event.clone());
+            events.push(event);
         }
 
         if obj.get("type").and_then(Value::as_str) == Some("result") {
@@ -213,23 +283,20 @@ impl StreamJsonlState {
             }
         }
 
-        if new_text.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(new_text))
-        }
+        Ok(events)
     }
 
     pub fn usage(&self) -> Option<CompleterUsage> {
         self.usage
     }
 
-    /// Finish after stdout EOF. Empty assistant text fail-closes; `result`
-    /// text is the fallback when no content-block text was seen.
+    /// Finish after stdout EOF. Empty assistant text fail-closes unless this
+    /// turn mapped at least one gents `tool_use`. `result` text is the fallback
+    /// when no content-block text was seen.
     pub fn finish(self) -> Result<String, CompleterParseError> {
-        if !self.tool_names.is_empty() {
+        if !self.unmapped_names.is_empty() {
             return Err(CompleterParseError::ToolUse {
-                names: self.tool_names.join(", "),
+                names: self.unmapped_names.join(", "),
             });
         }
         let mut out = self.texts.concat();
@@ -237,7 +304,7 @@ impl StreamJsonlState {
         if out.is_empty() {
             out = self.result_text.trim().to_string();
         }
-        if out.is_empty() {
+        if out.is_empty() && self.mapped.is_empty() {
             return Err(CompleterParseError::EmptyAssistantText);
         }
         Ok(out)
@@ -399,17 +466,17 @@ mod tests {
                 r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"po"}]}}"#,
             )
             .expect("assistant line");
-        assert_eq!(first.as_deref(), Some("po"));
+        assert_eq!(first, vec![StreamJsonlEvent::Text("po".into())]);
         let second = state
             .push_line(
                 r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ng"}]}}"#,
             )
             .expect("second assistant line");
-        assert_eq!(second.as_deref(), Some("ng"));
+        assert_eq!(second, vec![StreamJsonlEvent::Text("ng".into())]);
         let result = state
             .push_line(r#"{"type":"result","subtype":"success","result":"pong","is_error":false}"#)
             .expect("result line");
-        assert_eq!(result, None);
+        assert!(result.is_empty());
         assert_eq!(state.finish().expect("finish"), "pong");
     }
 
@@ -418,6 +485,70 @@ mod tests {
         let err = parse_stream_jsonl(TOOL_USE).expect_err("tool_use must fail closed");
         match err {
             CompleterParseError::ToolUse { names } => assert!(names.contains("Bash")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_gents_named_tool_use_on_surface() {
+        let mut state = StreamJsonlState::with_surface(["echo"]);
+        let events = state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}]}}"#,
+            )
+            .expect("mapped tool_use");
+        assert_eq!(
+            events,
+            vec![StreamJsonlEvent::ToolUse {
+                id: "toolu_1".into(),
+                name: "echo".into(),
+                input: serde_json::json!({}),
+            }]
+        );
+        assert_eq!(state.finish().expect("mapped turn may have empty text"), "");
+    }
+
+    #[test]
+    fn bash_is_not_bash_on_gents_surface() {
+        let mut state = StreamJsonlState::with_surface(["bash"]);
+        let err = state
+            .push_line(TOOL_USE.lines().next().expect("assistant line"))
+            .expect_err("Bash is not bash");
+        match err {
+            CompleterParseError::ToolUse { names } => assert!(names.contains("Bash")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_surface_still_fail_closes_gents_named_tool_use() {
+        let mut state = StreamJsonlState::new();
+        let err = state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}]}}"#,
+            )
+            .expect_err("empty surface");
+        match err {
+            CompleterParseError::ToolUse { names } => assert!(names.contains("echo")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_tool_use_id_fail_closes() {
+        let mut state = StreamJsonlState::with_surface(["echo"]);
+        state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}]}}"#,
+            )
+            .expect("first");
+        let err = state
+            .push_line(
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}]}}"#,
+            )
+            .expect_err("duplicate");
+        match err {
+            CompleterParseError::DuplicateToolUseId { id } => assert_eq!(id, "toolu_1"),
             other => panic!("unexpected error: {other:?}"),
         }
     }

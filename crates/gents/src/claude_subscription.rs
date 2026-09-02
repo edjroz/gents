@@ -1,9 +1,12 @@
 //! Claude Max / Claude Code CLI subscription provider (Path A in-process).
 //!
 //! Seat truth lives in process-local `--claude-config-dir` state, not DefraDB
-//! `OAuthCredential` documents. A2b is text-only: tools are never forwarded to
-//! the CLI (`--tools ""`), and any `tool_use` in stdout fails closed.
+//! `OAuthCredential` documents. Live CLI argv stays `--tools ""`. Mapped
+//! `tool_use` of gents names on this turn's `request.tools` become native
+//! `ToolCall`s; empty surface, Claude-native names, and unknown names still
+//! fail closed (`Bash` is not `bash`).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
@@ -21,8 +24,8 @@ use tokio::process::Command;
 use tracing::warn;
 
 use crate::claude_completer::{
-    CompleterUsage, StreamJsonlState, completer_argv, parse_auth_status_logged_in,
-    sanitize_child_env,
+    CompleterUsage, StreamJsonlEvent, StreamJsonlState, completer_argv,
+    parse_auth_status_logged_in, sanitize_child_env,
 };
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
@@ -249,9 +252,10 @@ impl CompletionModel for ClaudeSubscriptionModel {
         &self,
         request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+        let surface: HashSet<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
         let (child, label) = spawn_completer(&self.model, &request).await?;
         Ok(StreamingCompletionResponse::stream(Box::pin(
-            stream_child_stdout(child, label),
+            stream_child_stdout(child, label, surface),
         )))
     }
 }
@@ -261,12 +265,6 @@ async fn spawn_completer(
     request: &CompletionRequest,
 ) -> Result<(tokio::process::Child, String), CompletionError> {
     let seat = require_process_seat()?;
-    if !request.tools.is_empty() {
-        warn!(
-            tool_count = request.tools.len(),
-            "ClaudeCliSubscription A2b is text-only; ignoring owned-loop tool definitions (CLI forced --tools \"\")"
-        );
-    }
     let prompt = flatten_completion_request(request);
     let prompt = if prompt.trim().is_empty() {
         "Reply with exactly: pong".to_string()
@@ -338,6 +336,7 @@ async fn spawn_completer(
 fn stream_child_stdout(
     mut child: tokio::process::Child,
     label: String,
+    surface: HashSet<String>,
 ) -> impl futures::Stream<Item = Result<RawStreamingChoice<ClaudeStreamResponse>, CompletionError>>
 {
     async_stream::stream! {
@@ -357,10 +356,11 @@ fn stream_child_stdout(
         });
 
         let mut lines = BufReader::new(stdout).lines();
-        let mut state = StreamJsonlState::new();
+        let mut state = StreamJsonlState::with_surface(surface);
         let mut jsonl_mode: Option<bool> = None;
         let mut plain = String::new();
         let mut yielded_text = false;
+        let mut yielded_tool = false;
 
         let read_error = loop {
             match lines.next_line().await {
@@ -374,11 +374,24 @@ fn stream_child_stdout(
                     }
                     if jsonl_mode == Some(true) {
                         match state.push_line(&line) {
-                            Ok(Some(text)) => {
-                                yielded_text = true;
-                                yield Ok(RawStreamingChoice::Message(text));
+                            Ok(events) => {
+                                for event in events {
+                                    match event {
+                                        StreamJsonlEvent::Text(text) => {
+                                            yielded_text = true;
+                                            yield Ok(RawStreamingChoice::Message(text));
+                                        }
+                                        StreamJsonlEvent::ToolUse { id, name, input } => {
+                                            yielded_tool = true;
+                                            yield Ok(RawStreamingChoice::ToolCall(
+                                                rig::streaming::RawStreamingToolCall::new(
+                                                    id, name, input,
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
                             }
-                            Ok(None) => {}
                             Err(error) => {
                                 let _ = child.start_kill();
                                 yield Err(CompletionError::ProviderError(error.to_string()));
@@ -435,8 +448,13 @@ fn stream_child_stdout(
             let usage = state.usage().map(rig_usage_from_completer);
             match state.finish() {
                 Ok(text) => {
-                    if !yielded_text {
+                    if !yielded_text && !text.trim().is_empty() {
                         yield Ok(RawStreamingChoice::Message(text));
+                    } else if !yielded_text && !yielded_tool {
+                        yield Err(CompletionError::ProviderError(
+                            "completer returned empty assistant text".to_string(),
+                        ));
+                        return;
                     }
                     yield Ok(RawStreamingChoice::FinalResponse(ClaudeStreamResponse {
                         usage,
@@ -467,13 +485,18 @@ async fn capture_claude_cli_request(
     prompt: &str,
     request: &CompletionRequest,
 ) -> Result<(), CompletionError> {
+    let tools: Vec<serde_json::Value> = request
+        .tools
+        .iter()
+        .map(|tool| serde_json::json!({ "name": tool.name }))
+        .collect();
     let request_json = serde_json::json!({
         "model": model,
         "messages": [{
             "role": "user",
             "content": prompt,
         }],
-        "tools": [],
+        "tools": tools,
         "tool_choice": null,
         "temperature": request.temperature,
         "max_tokens": request.max_tokens,
@@ -506,33 +529,47 @@ pub fn flatten_completion_request(request: &CompletionRequest) -> String {
     for message in request.chat_history.iter() {
         match message {
             rig::completion::Message::User { content } => {
-                let text = content
-                    .iter()
-                    .filter_map(|block| match block {
+                for block in content.iter() {
+                    match block {
                         rig::completion::message::UserContent::Text(text) => {
-                            Some(text.text.as_str())
+                            if !text.text.is_empty() {
+                                parts.push(format!("user: {}", text.text));
+                            }
                         }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                if !text.is_empty() {
-                    parts.push(format!("user: {text}"));
+                        rig::completion::message::UserContent::ToolResult(result) => {
+                            let body: String = result
+                                .content
+                                .iter()
+                                .filter_map(|item| match item {
+                                    rig::completion::message::ToolResultContent::Text(text) => {
+                                        Some(text.text.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("");
+                            parts.push(format!("tool_result {}: {body}", result.id));
+                        }
+                        _ => {}
+                    }
                 }
             }
             rig::completion::Message::Assistant { content, .. } => {
-                let text = content
-                    .iter()
-                    .filter_map(|block| match block {
+                for block in content.iter() {
+                    match block {
                         rig::completion::message::AssistantContent::Text(text) => {
-                            Some(text.text.as_str())
+                            if !text.text.is_empty() {
+                                parts.push(format!("assistant: {}", text.text));
+                            }
                         }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                if !text.is_empty() {
-                    parts.push(format!("assistant: {text}"));
+                        rig::completion::message::AssistantContent::ToolCall(call) => {
+                            parts.push(format!(
+                                "assistant_tool_call {} {}: {}",
+                                call.id, call.function.name, call.function.arguments
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
             }
             other => {
@@ -1055,6 +1092,240 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
             msg.contains("--claude-write-approved"),
             "unexpected error: {msg}"
         );
+    }
+
+    fn echo_tool_request() -> CompletionRequest {
+        CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: OneOrMany::one(Message::User {
+                content: OneOrMany::one(UserContent::Text(Text {
+                    text: "use echo".into(),
+                })),
+            }),
+            documents: Vec::new(),
+            tools: vec![rig::completion::ToolDefinition {
+                name: "echo".into(),
+                description: "echo".into(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+            }],
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_maps_gents_named_tool_use_from_fake_jsonl() {
+        let _guard = lock_process_seat_for_test();
+        let temp = workspace_tempdir("map-echo-tool-use");
+        let jsonl = temp.join("stdout.jsonl");
+        std::fs::write(
+            &jsonl,
+            include_str!("claude_completer/fixtures/tool_use_echo.jsonl"),
+        )
+        .expect("write echo fixture");
+        let fake = write_fake_completer(&temp, &format!("exec cat '{}'", jsonl.display()));
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(echo_tool_request()).await.expect("stream");
+        use futures::StreamExt;
+        use rig::streaming::StreamedAssistantContent;
+        let mut calls = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("chunk") {
+                StreamedAssistantContent::ToolCall { tool_call, .. } => {
+                    calls.push((tool_call.id, tool_call.function.name));
+                }
+                StreamedAssistantContent::Final(_) => break,
+                other => panic!("unexpected chunk: {other:?}"),
+            }
+        }
+        assert_eq!(calls, vec![("toolu_1".into(), "echo".into())]);
+    }
+
+    #[tokio::test]
+    async fn stream_fail_closes_bash_when_surface_is_bash() {
+        let _guard = lock_process_seat_for_test();
+        let temp = workspace_tempdir("bash-unmapped");
+        let jsonl = temp.join("stdout.jsonl");
+        std::fs::write(
+            &jsonl,
+            include_str!("claude_completer/fixtures/tool_use.jsonl"),
+        )
+        .expect("write bash fixture");
+        let fake = write_fake_completer(&temp, &format!("exec cat '{}'", jsonl.display()));
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let mut request = echo_tool_request();
+        request.tools[0].name = "bash".into();
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(request).await.expect("stream");
+        use futures::StreamExt;
+        let err = loop {
+            match stream.next().await {
+                Some(Err(err)) => break err,
+                Some(Ok(_)) => continue,
+                None => panic!("expected fail-closed Bash"),
+            }
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Bash"), "{msg}");
+    }
+
+    #[test]
+    fn flatten_includes_tool_call_and_result() {
+        use rig::completion::message::{
+            AssistantContent, ToolCall, ToolFunction, ToolResult, ToolResultContent,
+        };
+        let request = CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: OneOrMany::many(vec![
+                Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(AssistantContent::ToolCall(ToolCall::new(
+                        "toolu_1".into(),
+                        ToolFunction::new("echo".into(), serde_json::json!({})),
+                    ))),
+                },
+                Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                        id: "toolu_1".into(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: "ECHOED".into(),
+                        })),
+                    })),
+                },
+            ])
+            .expect("history"),
+            documents: Vec::new(),
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
+        };
+        let prompt = flatten_completion_request(&request);
+        assert!(
+            prompt.contains("assistant_tool_call toolu_1 echo"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("tool_result toolu_1: ECHOED"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn fake_second_turn_sees_flattened_tool_result() {
+        let _guard = lock_process_seat_for_test();
+        let temp = workspace_tempdir("fake-round-trip");
+        let echo_jsonl = temp.join("echo.jsonl");
+        std::fs::write(
+            &echo_jsonl,
+            include_str!("claude_completer/fixtures/tool_use_echo.jsonl"),
+        )
+        .expect("write echo");
+        let fake = write_fake_completer(
+            &temp,
+            &format!(
+                r#"if printf '%s' "$1" | grep -q 'tool_result'; then
+printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"done"}}]}}}}'
+printf '%s\n' '{{"type":"result","subtype":"success","result":"done","is_error":false}}'
+else
+exec cat '{}'
+fi"#,
+                echo_jsonl.display()
+            ),
+        );
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        use rig::completion::message::{
+            AssistantContent, ToolCall, ToolFunction, ToolResult, ToolResultContent,
+        };
+        let follow_up = CompletionRequest {
+            model: None,
+            preamble: None,
+            chat_history: OneOrMany::many(vec![
+                Message::User {
+                    content: OneOrMany::one(UserContent::Text(Text {
+                        text: "use echo".into(),
+                    })),
+                },
+                Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(AssistantContent::ToolCall(ToolCall::new(
+                        "toolu_1".into(),
+                        ToolFunction::new("echo".into(), serde_json::json!({})),
+                    ))),
+                },
+                Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                        id: "toolu_1".into(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: "ECHOED".into(),
+                        })),
+                    })),
+                },
+            ])
+            .expect("history"),
+            documents: Vec::new(),
+            tools: vec![rig::completion::ToolDefinition {
+                name: "echo".into(),
+                description: "echo".into(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+            }],
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: None,
+            output_schema: None,
+        };
+
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(follow_up).await.expect("stream");
+        use futures::StreamExt;
+        use rig::streaming::StreamedAssistantContent;
+        let mut texts = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item.expect("chunk") {
+                StreamedAssistantContent::Text(text) => texts.push(text.text),
+                StreamedAssistantContent::Final(_) => break,
+                other => panic!("unexpected chunk: {other:?}"),
+            }
+        }
+        assert_eq!(texts.join(""), "done");
     }
 
     #[test]
