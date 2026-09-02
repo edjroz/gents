@@ -4,22 +4,25 @@
 //! `OAuthCredential` documents. A2b is text-only: tools are never forwarded to
 //! the CLI (`--tools ""`), and any `tool_use` in stdout fails closed.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
 use futures::StreamExt;
 use rig::client::CompletionClient;
 use rig::completion::{
-    CompletionError, CompletionModel, CompletionRequest, CompletionResponse, Usage,
+    CompletionError, CompletionModel, CompletionRequest, CompletionResponse, GetTokenUsage, Usage,
 };
 use rig::one_or_many::OneOrMany;
 use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::claude_completer::{completer_argv, sanitize_child_env, StreamJsonlState};
+use crate::claude_completer::{
+    CompleterUsage, StreamJsonlState, completer_argv, sanitize_child_env,
+};
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
 ///
@@ -115,6 +118,27 @@ impl CompletionClient for ClaudeSubscriptionClient {
     type CompletionModel = ClaudeSubscriptionModel;
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct ClaudeStreamResponse {
+    pub usage: Option<Usage>,
+}
+
+impl GetTokenUsage for ClaudeStreamResponse {
+    fn token_usage(&self) -> Option<Usage> {
+        self.usage
+    }
+}
+
+fn rig_usage_from_completer(usage: CompleterUsage) -> Usage {
+    Usage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.input_tokens.saturating_add(usage.output_tokens),
+        cached_input_tokens: usage.cache_read_input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaudeSubscriptionModel {
     model: String,
@@ -122,7 +146,7 @@ pub struct ClaudeSubscriptionModel {
 
 impl CompletionModel for ClaudeSubscriptionModel {
     type Response = ();
-    type StreamingResponse = ();
+    type StreamingResponse = ClaudeStreamResponse;
     type Client = ClaudeSubscriptionClient;
 
     fn make(_: &Self::Client, model: impl Into<String>) -> Self {
@@ -137,10 +161,16 @@ impl CompletionModel for ClaudeSubscriptionModel {
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
         let mut stream = self.stream(request).await?;
         let mut text = String::new();
+        let mut usage = Usage::new();
         while let Some(item) = stream.next().await {
             match item? {
                 rig::streaming::StreamedAssistantContent::Text(chunk) => text.push_str(&chunk.text),
-                rig::streaming::StreamedAssistantContent::Final(_) => break,
+                rig::streaming::StreamedAssistantContent::Final(raw) => {
+                    if let Some(reported) = raw.token_usage() {
+                        usage = reported;
+                    }
+                    break;
+                }
                 _ => {}
             }
         }
@@ -151,7 +181,7 @@ impl CompletionModel for ClaudeSubscriptionModel {
         }
         Ok(CompletionResponse {
             choice: OneOrMany::one(rig::completion::AssistantContent::text(text)),
-            usage: Usage::new(),
+            usage,
             raw_response: (),
             message_id: None,
         })
@@ -243,7 +273,8 @@ async fn spawn_completer(
 fn stream_child_stdout(
     mut child: tokio::process::Child,
     label: String,
-) -> impl futures::Stream<Item = Result<RawStreamingChoice<()>, CompletionError>> {
+) -> impl futures::Stream<Item = Result<RawStreamingChoice<ClaudeStreamResponse>, CompletionError>>
+{
     async_stream::stream! {
         let Some(stdout) = child.stdout.take() else {
             yield Err(CompletionError::ProviderError(format!(
@@ -336,12 +367,15 @@ fn stream_child_stdout(
         }
 
         if jsonl_mode == Some(true) {
+            let usage = state.usage().map(rig_usage_from_completer);
             match state.finish() {
                 Ok(text) => {
                     if !yielded_text {
                         yield Ok(RawStreamingChoice::Message(text));
                     }
-                    yield Ok(RawStreamingChoice::FinalResponse(()));
+                    yield Ok(RawStreamingChoice::FinalResponse(ClaudeStreamResponse {
+                        usage,
+                    }));
                 }
                 Err(error) => {
                     yield Err(CompletionError::ProviderError(error.to_string()));
@@ -356,7 +390,9 @@ fn stream_child_stdout(
                 return;
             }
             yield Ok(RawStreamingChoice::Message(text));
-            yield Ok(RawStreamingChoice::FinalResponse(()));
+            yield Ok(RawStreamingChoice::FinalResponse(ClaudeStreamResponse {
+                usage: None,
+            }));
         }
     }
 }
@@ -456,6 +492,7 @@ mod tests {
     use rig::completion::message::{Message, Text, UserContent};
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -651,6 +688,53 @@ emit('{"type":"result","subtype":"success","result":"pong","is_error":false}')
         assert!(
             started.elapsed() >= Duration::from_millis(1000),
             "completer sleep must still run after the first yield"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_reports_result_usage_on_final() {
+        let temp = workspace_tempdir("process-cli-stream-usage");
+        let jsonl = temp.join("stdout.jsonl");
+        std::fs::write(
+            &jsonl,
+            include_str!("claude_completer/fixtures/assistant_ok_with_usage.jsonl"),
+        )
+        .expect("write usage fixture");
+        let fake = write_fake_completer(&temp, &format!("exec cat '{}'", jsonl.display()));
+        install_process_seat(Some(ClaudeSeatConfig {
+            config_dir: temp.join("claude-config"),
+            write_approved: false,
+            workdir: temp.join("workdir"),
+            log_dir: None,
+            claude_bin: PathBuf::from("claude"),
+            fake_completer: Some(fake),
+        }));
+        std::fs::create_dir_all(temp.join("workdir")).unwrap();
+
+        let client = ClaudeSubscriptionClient::new();
+        let model = client.completion_model("claude-sonnet-5");
+        let mut stream = model.stream(ping_request()).await.expect("stream");
+        use futures::StreamExt;
+        use rig::streaming::StreamedAssistantContent;
+        let mut usage = None;
+        while let Some(item) = stream.next().await {
+            match item.expect("chunk") {
+                StreamedAssistantContent::Final(raw) => {
+                    usage = raw.token_usage();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            usage,
+            Some(Usage {
+                input_tokens: 2,
+                output_tokens: 4,
+                total_tokens: 6,
+                cached_input_tokens: 0,
+                cache_creation_input_tokens: 2774,
+            })
         );
     }
 

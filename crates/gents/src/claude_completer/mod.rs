@@ -64,11 +64,59 @@ pub enum CompleterParseError {
 /// the child process exits. `parse_stream_jsonl` is the buffered oracle over
 /// the same state machine. `tool_use` still fail-closes (A2b); A2c will map
 /// gents names on this type.
+/// Token counts from a Claude Code `result.usage` object.
+///
+/// Field names pinned from a live `stream-json` `result` line
+/// (`.scratch/claude-spike/logs/completer-20260830T001534Z.jsonl`):
+/// `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
+/// `cache_creation_input_tokens`. Absent object / no known keys → `None`
+/// (owned-loop ledger treats zeros/missing as `Missing`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompleterUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+}
+
+impl CompleterUsage {
+    /// Parse a `result.usage` JSON object. Returns `None` when no known token
+    /// field is present so we never invent a report.
+    pub fn from_result_usage(value: &Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let input_tokens = json_u64(obj, "input_tokens");
+        let output_tokens = json_u64(obj, "output_tokens");
+        let cache_read_input_tokens = json_u64(obj, "cache_read_input_tokens");
+        let cache_creation_input_tokens = json_u64(obj, "cache_creation_input_tokens");
+        if input_tokens.is_none()
+            && output_tokens.is_none()
+            && cache_read_input_tokens.is_none()
+            && cache_creation_input_tokens.is_none()
+        {
+            return None;
+        }
+        Some(Self {
+            input_tokens: input_tokens.unwrap_or(0),
+            output_tokens: output_tokens.unwrap_or(0),
+            cache_read_input_tokens: cache_read_input_tokens.unwrap_or(0),
+            cache_creation_input_tokens: cache_creation_input_tokens.unwrap_or(0),
+        })
+    }
+}
+
+fn json_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Option<u64> {
+    let value = obj.get(key)?;
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+}
+
 #[derive(Debug, Default)]
 pub struct StreamJsonlState {
     texts: Vec<String>,
     tool_names: Vec<String>,
     result_text: String,
+    usage: Option<CompleterUsage>,
     line: usize,
 }
 
@@ -136,6 +184,9 @@ impl StreamJsonlState {
             if let Some(r) = obj.get("result").and_then(Value::as_str) {
                 self.result_text = r.to_string();
             }
+            if let Some(usage) = obj.get("usage").and_then(CompleterUsage::from_result_usage) {
+                self.usage = Some(usage);
+            }
             if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
                 return Err(CompleterParseError::ResultError {
                     message: self.result_text.clone(),
@@ -148,6 +199,10 @@ impl StreamJsonlState {
         } else {
             Ok(Some(new_text))
         }
+    }
+
+    pub fn usage(&self) -> Option<CompleterUsage> {
+        self.usage
     }
 
     /// Finish after stdout EOF. Empty assistant text fail-closes; `result`
@@ -239,6 +294,7 @@ mod tests {
     use std::ffi::OsString;
 
     const ASSISTANT_OK: &str = include_str!("fixtures/assistant_ok.jsonl");
+    const ASSISTANT_OK_WITH_USAGE: &str = include_str!("fixtures/assistant_ok_with_usage.jsonl");
     const TOOL_USE: &str = include_str!("fixtures/tool_use.jsonl");
     const EMPTY_RESULT: &str = include_str!("fixtures/empty_result.jsonl");
 
@@ -250,7 +306,12 @@ mod tests {
 
     #[test]
     fn incremental_parser_matches_buffered_oracle_on_fixtures() {
-        for fixture in [ASSISTANT_OK, TOOL_USE, EMPTY_RESULT] {
+        for fixture in [
+            ASSISTANT_OK,
+            ASSISTANT_OK_WITH_USAGE,
+            TOOL_USE,
+            EMPTY_RESULT,
+        ] {
             let buffered = parse_stream_jsonl(fixture);
             let mut state = StreamJsonlState::new();
             let incremental = (|| {
@@ -267,6 +328,48 @@ mod tests {
         let mut state = StreamJsonlState::new();
         let incremental = state.push_line(jsonl).and_then(|_| state.finish());
         assert_eq!(incremental, buffered);
+    }
+
+    #[test]
+    fn result_usage_fixture_maps_pinned_fields() {
+        let mut state = StreamJsonlState::new();
+        for line in ASSISTANT_OK_WITH_USAGE.lines() {
+            let _ = state.push_line(line).expect("usage fixture line");
+        }
+        assert_eq!(
+            parse_stream_jsonl(ASSISTANT_OK_WITH_USAGE).expect("text"),
+            "pong"
+        );
+        assert_eq!(
+            state.usage(),
+            Some(CompleterUsage {
+                input_tokens: 2,
+                output_tokens: 4,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 2774,
+            })
+        );
+    }
+
+    #[test]
+    fn result_without_usage_object_reports_none() {
+        let mut state = StreamJsonlState::new();
+        for line in ASSISTANT_OK.lines() {
+            let _ = state.push_line(line).expect("assistant_ok line");
+        }
+        assert_eq!(state.usage(), None);
+    }
+
+    #[test]
+    fn usage_object_without_known_token_fields_is_ignored() {
+        let mut state = StreamJsonlState::new();
+        state
+            .push_line(
+                r#"{"type":"result","subtype":"success","result":"pong","is_error":false,"usage":{"service_tier":"standard"}}"#,
+            )
+            .expect("result");
+        assert_eq!(state.usage(), None);
+        assert_eq!(state.finish().expect("text"), "pong");
     }
 
     #[test]
