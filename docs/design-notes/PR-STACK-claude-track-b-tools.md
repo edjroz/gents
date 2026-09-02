@@ -1,0 +1,127 @@
+# PR stack: Claude tool bridging (Track B)
+
+**Date:** 2026-09-02
+**Parent SPEC:** [`SPEC-claude-a2c-tool-bridging.md`](./SPEC-claude-a2c-tool-bridging.md)
+**Base:** `spike/claude-p4-write-gate` (Track A complete). Own branches; not P5 on the P1–P4 Graphite stack.
+**Not this track:** fork-retry; restoring Grok as prod default (ask first); renaming `ClaudeCliSubscription`; desktop UI; letting Claude Code execute tools.
+
+Track A made Claude an honest **text** provider (stream, usage, seat health, write-gate). That is still text-only: `--tools ""`, fail-closed on any `tool_use`. Track B is a different product: Claude may **request** gents tools; gents **executes** them on the same owned loop as Grok/Codex.
+
+## Why this is its own track
+
+The old A2c-0…4 list was one feature cut into methodology stages (lock → Lean → conformance → code → live) and hung under P4. Track A was purpose-sliced: each PR was independently valuable if you stopped. Track B must be the same.
+
+Lean → conformance → Rust still applies **inside** any slice that changes legal transitions or provider-input. Those are how a purpose lands, not the purposes themselves. A gated live turn is a verify gate on a purpose, not a PR whose purpose is “go live.”
+
+## What the old steps were actually for
+
+| Old | What it was | Purpose it was trying to serve | Where it goes now |
+|---|---|---|---|
+| A2c-0 (1) C1 vs C2 | Human lock before all work | Know a wire that can *declare* gents tools without the CLI *executing* them | **B1** (evidence, not a meeting) |
+| A2c-0 (2) C1 flags / result feedback | Human lock | Same as B1 — exact argv and how `tool_result` returns | **B1** |
+| A2c-0 (3) C2 oat-free auth | Human lock | Only if B1 kills C1 | **B1** fallback, or a later C2 slice |
+| A2c-0 (4) name map | Human lock | Gents names are the surface; `Bash` is not `bash` | Invariant of **B2/B3**, default **no aliases**. Not a PR |
+| A2c-0 (5) subagent in v1 | Human lock | Claude `spawn_subagent` is a gents child request, never Claude `Task` | **B4** later. First product is native+MCP only |
+| A2c-0 (6) empty surface | Human lock | Text-only behaviors stay on the A2b fence | Invariant of **B2/B3**. Not a PR |
+| A2c-1 Lean | Methodology | Claude `tool_use`/`tool_result` are legal PromptAssembly + ToolCall traces | Method inside **B2** |
+| A2c-2 conformance | Methodology | Generated witnesses fence the map | Method inside **B2** |
+| A2c-3 Completer map | The product increment | Fake completer round-trip through `run_loop_stream` | Product of **B2** |
+| A2c-4 live tool turn | Methodology / smoke | Real seat, gents executes, CLI does not Bash, oat=0 | Verify gate of **B3** |
+
+## Purposes (the stack)
+
+```text
+Track B — Claude requests gents tools; gents executes
+B1  wire evidence
+B2  owned-loop round-trip (fake completer)
+B3  live tool-capable seat
+B4  spawn / subagent          (optional, later; not v1)
+```
+
+B1 and B2 do **not** block each other. B3 needs both. B4 is a later purpose, not a lock that stalls B1–B3.
+
+C4 (Claude-owned MCP / Claude `Task` as the agent loop) stays **rejected**. C3 (prompt-stuffed JSON) stays last resort if B1 kills C1 and C2 cannot auth without oat.
+
+### B1 — Wire evidence
+
+**Purpose:** know how live Claude learns about gents tools without Claude Code running them.
+
+This is archaeology plus a written lock, not a vote. `--tools` on Claude Code has historically named **built-ins the CLI executes**. If that is still true and there is no declare-without-execute mode, C1 is dead.
+
+**Change.**
+
+- Capture evidence: CLI help/docs/flags for custom tool schemas, permission modes, `--max-turns`, `--input-format stream-json`, `--resume` vs fresh `-p`, whether the CLI executes enabled tools before gents sees `tool_use`.
+- Live probe only with numbered write approval, and only if help/docs cannot answer. Prefer a throwaway `--claude-config-dir`, not prod `~/.gents`.
+- Fill the SPEC lock table from that evidence: C1, or C1 dead → C2 (oat-free auth must be stated), or both dead → C3 last resort.
+- No Completer behavior change. Keep `--tools ""` on the live path.
+
+**Stop after:** the SPEC records a wire. We do not guess in B3 argv.
+
+**Evidence 2026-09-02 (CLI 2.1.251 + official cli-reference, no live `-p`):** `--tools` is the built-in set only. C1 “pass gents names on `--tools`” is dead. MCP is C4 (CLI executes). `--input-format stream-json` can feed later turns but does not declare tools. Live B3 is C2 or last-resort C3 — **ask before locking C2** (oat-free auth). B2 still proceeds on the shared content-block shape.
+
+**Not in B1:** Lean, fake-completer map, changing `loop_stream`, aliases, spawn.
+
+### B2 — Owned-loop round-trip (fake)
+
+**Purpose:** a Claude-shaped `tool_use` of a **gents** name becomes a normal `AgentToolCall`, gents runs it, and the next provider turn contains the `tool_result`. Production CLI stays text-only.
+
+This is the product increment that makes “Claude is on the same loop as Grok” true in tests. The homomorphism is at the **native row** boundary (`tool_use` / `tool_result` content blocks → `MessageKind` ToolCall/ToolResult). That shape is shared by C1 stream-json and C2 Messages, which is why B2 does not wait on B1. If B1 later forces C3, B2 Lean would need a different projection — stop and extend the model; do not flatten unpaired `tool_use` into assistant text.
+
+**How it lands** (foundation flow, one purpose):
+
+1. Lean: map is a homomorphism into existing `sanitizeForProvider` / ToolCall states, **or** a `ClaudeCliView` that is sound, idempotent, and split-stable. UniqueCallIds under `toolu_*` → gents `call_id`. No new `ToolCallState` unless a proof says we must. Empty surface and unmapped/Claude-native names fail closed (prefer turn failure over teaching Claude that gents will catch `Bash`). Persist-before-send still blocks send. Budget/aggregate fail-closed classes unchanged. Zero `sorry`s.
+2. Conformance: Lean-computed witnesses (paired round-trip, unpaired drop, orphan drop, duplicate id, unmapped name). Rust fences go red against today’s A2b Completer.
+3. Completer map at `claude_completer` / `claude_subscription` only. Stop ignoring `request.tools` on the **fake** path. Stop fail-closed on **mapped** `tool_use`. Keep fail-closed on unmapped / native Claude / empty surface. Fake JSONL: one paired round-trip; keep `tool_use.jsonl` as the Bash-unmapped reject. Do not special-case Claude in `loop_stream.rs` unless Lean changed the chokepoint.
+
+If Lean is large, land (1)+(2) then (3) as stacked commits/PRs **of B2**, not as a new track. Same purpose.
+
+**Stop after:** fake-completer tool round-trip is green; live argv still `--tools ""`.
+
+**Not in B2:** live CLI flags; spawn/subagent; oat; aliases; HTTP Messages client (that is C2 transport, B3 or a C2 follow-on).
+
+### B3 — Live tool-capable seat
+
+**Purpose:** on a real seat, a tool-capable Claude behavior requests a gents tool; the CLI does not execute; gents does; the loop continues.
+
+**Depends on:** B1 (argv / result-feedback wire) and B2 (map).
+
+**Change.**
+
+- On tool-capable turns, stop forcing `--tools ""`. Pass the locked B1 flags. Empty surface keeps the A2b fence.
+- Capture canonical body includes the exposed gents surface, not `tools: []`.
+- Gated live: numbered `--claude-write-approved`; harmless gents tool (not Claude `Bash`); `AgentToolCall ≥ 1` with legal transitions; result on the next turn; `OAuthCredential` Claude = 0; no `:8787`; no CLI Bash in the workdir. Evidence under `.scratch/claude-spike/logs/`.
+
+**Stop after:** live tool parity for native+MCP (and skills already on the gents surface). Still no Claude-owned tools. Still no spawn unless B4.
+
+**Not in B3:** new protocol (B1 already locked it); new homomorphism (B2 already landed it); spawn.
+
+### B4 — Spawn / subagent (later)
+
+**Purpose:** a Claude `tool_use` of gents spawn tools takes the **bridge** path (`childRequestId = some`), never `complete_native`, never Claude `Task`.
+
+Out of the first product. First slice is native + MCP (+ skills already on the behavior). Do not block B1–B3 on this.
+
+## Invariants (not PRs)
+
+Record in the A2c SPEC. Do not open a slice to decide them unless we need to change them.
+
+- Gents executes; Claude only requests.
+- No aliases: `Bash` ↛ `bash`, `Read` ↛ `read_file`, … unless explicitly locked later.
+- Empty `ToolDyn[]` keeps A2b `--tools ""` + fail-closed on `tool_use`.
+- No oat in `OAuthCredential`. No `--bare`. Persist-before-send before spawn. Write gate refuse-closed.
+- C4 rejected.
+- Mapping lives at the Completer seam.
+
+## Always / ask / never
+
+**Always:** numbered write approval before live Claude; fake-completer tests before a live B3; Lean first inside B2 (and inside any later slice that changes legal transitions).
+
+**Ask first:** starting B3 without a B1 wire lock; C2 that reads CLI credentials; any alias table; changing `loop_stream` control flow; new `ToolCallState`; starting B4.
+
+**Never:** silent billable Claude; enabling Claude Code built-ins so the CLI runs Bash/files/Task; sneaking this into Track A / P1–P4.
+
+## Landing
+
+Own branch family off `spike/claude-p4-write-gate`, e.g. `spike/claude-b1-wire` / `b2-round-trip` / `b3-live-tools`. Do not Graphite-stack these as P5–P8 on Track A.
+
+B1 and B2 may proceed in parallel. B3 stacks on both. Focused `claude_` + PromptAssembly/ToolCall conformance tests. Live Claude only on B1 (if evidence needs it) and B3, each with numbered write approval.
