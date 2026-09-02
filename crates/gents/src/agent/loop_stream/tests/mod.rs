@@ -1,11 +1,11 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::llm::message::{AssistantContent, ToolResultContent, UserContent};
 use crate::llm::tool::{BoxFuture, ToolDefinition, ToolDyn, ToolError};
-use futures::{stream, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use rig::completion::{CompletionError, CompletionModel, CompletionRequest, CompletionResponse};
 
 use crate::llm::message::Message;
@@ -25,6 +25,7 @@ use support::*;
 
 include!("budgeting.rs");
 include!("capture.rs");
+include!("claude.rs");
 include!("one_shot.rs");
 include!("provider_input.rs");
 include!("retry.rs");
