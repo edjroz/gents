@@ -184,8 +184,8 @@ Point Claude Code at gents tools as MCP servers (or enable Claude `Task`) so **C
 |---|---|---|---|---|
 | Gents owns execution | Only if CLI cannot execute | Yes | Yes | No |
 | Homomorphism into PromptAssembly | Unknown (open) | Likely | Synthetic | N/A |
-| Seat / no oat | Yes | Open | Yes | Yes, but wrong owner |
-| A2c default candidate | Maybe | Maybe | No | Rejected |
+| Seat / no oat | Yes | **Locked:** process-local seat read, no DefraDB oat | Yes | Yes, but wrong owner |
+| A2c default candidate | Dead (`--tools`) | **Locked for B3** | Last resort (not taken) | Rejected |
 
 ### B1 evidence (2026-09-02) — no live write
 
@@ -205,9 +205,22 @@ Pinned against local CLI **2.1.251** (`claude --help`) and official [CLI referen
 
 **C1 as originally proposed** (stop `--tools ""`, pass gents names on `--tools`) is **dead**: that flag cannot name gents tools, and naming built-ins means the CLI executes them.
 
-**Still open (not locked here):** live B3 wire is C2 (Messages HTTP, oat-free auth must be asked) or last-resort C3 (`--tools ""` + prompt-stuffed schemas). B2 does **not** wait: fake JSONL uses the same `tool_use` / `tool_result` content-block shape C1 and C2 share.
+**Locked 2026-09-02 (human):** live B3 wire is **C2** (Anthropic Messages HTTP). C3 is not the path. C1 `--tools` declaration stays dead. C4 stays rejected.
 
-Do **not** start B3 without a C2-or-C3 lock. Do **not** enable MCP so Claude Code runs gents tools.
+### C2 auth lock (oat-free)
+
+The Messages client authenticates from the **process seat** (`--claude-config-dir`), never from DefraDB:
+
+- Read `$CLAUDE_CONFIG_DIR/.credentials.json` → `claudeAiOauth.accessToken` (same file the CLI uses on Linux and as the macOS Keychain fallback). Do not silently fall back to `~/.claude`.
+- Send `Authorization: Bearer <accessToken>` on `POST /v1/messages`. Do **not** send the oat as `x-api-key`.
+- **Never** upsert `OAuthCredential`, never harvest `sk-ant-oat01` into DefraDB, never log or print the token.
+- `is_agent_scoped_oauth()` stays **false**. Health stays `claude auth status` (P3).
+- Expired / missing token fail closed; operator re-runs `gents claude-login` (write-gated). Token refresh that would write the seat is **out of the first B3 slice**.
+- Live Messages send still requires `--claude-write-approved`.
+- Empty `ToolDyn[]` stays on the A2b process-CLI Completer (`--tools ""`). Tool-capable turns use Messages HTTP so the CLI never executes tools.
+- macOS Keychain (`Claude Code-credentials`, keyed to `CLAUDE_CONFIG_DIR`) is the CLI’s primary store; file read is the testable/Linux path. Keychain read is a follow-on if the file is absent — not a DefraDB lookup.
+
+Do **not** enable MCP so Claude Code runs gents tools.
 
 ## Fail-closed / audit semantics
 
@@ -254,7 +267,8 @@ Match the existing tool-call lifecycle. Do not add a Claude-only “best effort�
 
 ## Success criteria
 
-- [x] B1 evidence recorded (2026-09-02): C1 `--tools` custom schemas dead; MCP = C4; live B3 still C2 vs C3 (ask before C2). B2 unblocked on content-block shape.
+- [x] B1 evidence recorded (2026-09-02): C1 `--tools` custom schemas dead; MCP = C4.
+- [x] Live wire **C2** locked (2026-09-02): Messages HTTP; oat-free seat read; empty surface stays process CLI.
 - [ ] Lean starting models updated or explicitly proven unchanged; zero `sorry`s.
 - [ ] Conformance witnesses generated from Lean, consumed by Rust.
 - [ ] Claude tool_use maps to `AgentToolCall` and executes in gents, not in Claude Code.
@@ -274,15 +288,11 @@ Landing purposes (not methodology stages): [`PR-STACK-claude-track-b-tools.md`](
 
 Fill this SPEC’s lock table from CLI/docs evidence (live probe only with numbered write approval if help cannot answer):
 
-1. Protocol: **C1** CLI stream-json vs **C2** native Messages (C3 only if both fail; C4 rejected).
-   - **C1 `--tools` as declaration:** dead (built-in set only; see B1 evidence table).
-   - **C4 MCP:** still rejected (CLI executes).
-   - **Live B3:** C2 vs last-resort C3 — ask before locking C2 (oat-free auth).
-2. If C1: exact CLI flags that declare gents tools **without** CLI execution; how tool results are fed back (resume vs new `-p` vs stream-json stdin).
-   - No declare-without-execute flag found. `--input-format stream-json` is feedback-only.
-3. If C2: how the Messages client authenticates **without** `OAuthCredential` oat storage. **Still open.**
+1. Protocol: **C2** native Messages locked for live B3. C1 `--tools` declaration dead. C3 not taken. C4 rejected.
+2. C1 flags: N/A (dead). `--input-format stream-json` is feedback-only.
+3. C2 auth: process-local `--claude-config-dir/.credentials.json` `claudeAiOauth.accessToken` as `Authorization: Bearer`. No `OAuthCredential`. No token logs. Expired → fail closed + re-login. Keychain follow-on if file absent.
 
-**Verify:** evidence table filled; live argv still `--tools ""`. No Completer map in B1. C2/C3 not silently locked.
+**Verify:** lock table filled; live empty-surface argv still `--tools ""`.
 
 ### B2 Owned-loop round-trip (fake)
 

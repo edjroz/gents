@@ -57,7 +57,9 @@ This is archaeology plus a written lock, not a vote. `--tools` on Claude Code ha
 
 **Stop after:** the SPEC records a wire. We do not guess in B3 argv.
 
-**Evidence 2026-09-02 (CLI 2.1.251 + official cli-reference, no live `-p`):** `--tools` is the built-in set only. C1 “pass gents names on `--tools`” is dead. MCP is C4 (CLI executes). `--input-format stream-json` can feed later turns but does not declare tools. Live B3 is C2 or last-resort C3 — **ask before locking C2** (oat-free auth). B2 still proceeds on the shared content-block shape.
+**Evidence 2026-09-02 (CLI 2.1.251 + official cli-reference, no live `-p`):** `--tools` is the built-in set only. C1 “pass gents names on `--tools`” is dead. MCP is C4 (CLI executes). `--input-format stream-json` is feedback-only.
+
+**Locked 2026-09-02:** live B3 is **C2** (Messages HTTP). Auth: read `claudeAiOauth.accessToken` from `--claude-config-dir/.credentials.json`; `Authorization: Bearer`; never DefraDB oat; never log the token. Empty surface stays process CLI. C3 not taken.
 
 **Not in B1:** Lean, fake-completer map, changing `loop_stream`, aliases, spawn.
 
@@ -79,21 +81,21 @@ If Lean is large, land (1)+(2) then (3) as stacked commits/PRs **of B2**, not as
 
 **Not in B2:** live CLI flags; spawn/subagent; oat; aliases; HTTP Messages client (that is C2 transport, B3 or a C2 follow-on).
 
-### B3 — Live tool-capable seat
+### B3 — Live tool-capable seat (C2 Messages)
 
 **Purpose:** on a real seat, a tool-capable Claude behavior requests a gents tool; the CLI does not execute; gents does; the loop continues.
 
-**Depends on:** B1 (argv / result-feedback wire) and B2 (map).
+**Depends on:** B1 (C2 lock) and B2 (map).
 
 **Change.**
 
-- On tool-capable turns, stop forcing `--tools ""`. Pass the locked B1 flags. Empty surface keeps the A2b fence.
-- Capture canonical body includes the exposed gents surface, not `tools: []`.
-- Gated live: numbered `--claude-write-approved`; harmless gents tool (not Claude `Bash`); `AgentToolCall ≥ 1` with legal transitions; result on the next turn; `OAuthCredential` Claude = 0; no `:8787`; no CLI Bash in the workdir. Evidence under `.scratch/claude-spike/logs/`.
+- Empty surface: keep A2b process CLI (`--tools ""`).
+- Tool-capable turns: Anthropic `POST /v1/messages` with gents `tools` JSON. Auth from the seat file (C2 lock). Capture as HTTP persist-before-send (do not drop the fence). Map `tool_use` with B2 allow-list. Next turn is native `tool_result` content, not CLI flatten.
+- Gated live: numbered `--claude-write-approved`; harmless gents tool (not Claude `Bash`); `AgentToolCall ≥ 1`; oat Claude `OAuthCredential` = 0; no `:8787`; no CLI Bash in the workdir. Evidence under `.scratch/claude-spike/logs/`.
 
 **Stop after:** live tool parity for native+MCP (and skills already on the gents surface). Still no Claude-owned tools. Still no spawn unless B4.
 
-**Not in B3:** new protocol (B1 already locked it); new homomorphism (B2 already landed it); spawn.
+**Not in B3:** C3; Keychain (follow-on if `.credentials.json` absent); token refresh that writes the seat; spawn.
 
 ### B4 — Spawn / subagent (later)
 
