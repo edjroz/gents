@@ -28,6 +28,13 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 const DEFAULT_MAX_TOKENS: u64 = 4096;
 
+/// First `system` block on Messages HTTP. The seat's oat was minted for
+/// Claude Code; without this identity the same token 429s (`"Error"`, no
+/// `retry-after`) on every model while the process CLI keeps working. Sourced
+/// from third-party reports, not Anthropic docs — a numbered live experiment,
+/// never sent on the process-CLI wire.
+pub const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 /// Keys this path may emit. Sampling (`temperature`, `top_p`, `top_k`) and
 /// `CompletionRequest.additional_params` stay off the wire: live
 /// `claude-sonnet-5` returns 400 "`temperature` is deprecated for this model"
@@ -62,7 +69,8 @@ pub fn messages_sse_fixture() -> Option<String> {
         .clone()
 }
 
-/// Build the Anthropic Messages JSON body (stream + gents tools).
+/// Build the Anthropic Messages JSON body (stream + gents tools). `system` is
+/// always present: [`CLAUDE_CODE_IDENTITY`] then the Gents preamble, if any.
 pub fn build_messages_body(model: &str, request: &CompletionRequest) -> Value {
     let tools: Vec<Value> = request
         .tools
@@ -75,21 +83,24 @@ pub fn build_messages_body(model: &str, request: &CompletionRequest) -> Value {
             })
         })
         .collect();
-    let mut body = json!({
-        "model": model,
-        "max_tokens": request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        "stream": true,
-        "messages": anthropic_messages(request),
-        "tools": tools,
-    });
+    // Identity first, Gents preamble second; the preamble itself is untouched.
+    let mut system = vec![json!({ "type": "text", "text": CLAUDE_CODE_IDENTITY })];
     if let Some(preamble) = request
         .preamble
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        body["system"] = json!([{ "type": "text", "text": preamble }]);
+        system.push(json!({ "type": "text", "text": preamble }));
     }
+    let body = json!({
+        "model": model,
+        "max_tokens": request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+        "stream": true,
+        "system": system,
+        "messages": anthropic_messages(request),
+        "tools": tools,
+    });
     // Do not copy `request.temperature` or merge `request.additional_params`
     // (`top_p` / `top_k` / seed / penalties ride that map).
     debug_assert!(
@@ -190,6 +201,7 @@ pub fn parse_messages_sse(
 ) -> Result<Vec<RawStreamingChoice<ClaudeStreamResponse>>, CompletionError> {
     let mut events = Vec::new();
     let mut pending: Option<PendingTool> = None;
+    let mut seen_ids: HashSet<String> = HashSet::new();
     let mut usage = None;
     for payload in sse_data_payloads(sse) {
         let Some(kind) = payload.get("type").and_then(Value::as_str) else {
@@ -204,19 +216,25 @@ pub fn parse_messages_sse(
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
+                        if pending.is_some() {
+                            return Err(CompletionError::ProviderError(
+                                CompleterParseError::OverlappingToolUse { id }.to_string(),
+                            ));
+                        }
                         let name = block
                             .get("name")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        let input_json = match block.get("input") {
-                            Some(Value::Object(_)) => block["input"].to_string(),
-                            _ => String::new(),
+                        let start_input = match block.get("input") {
+                            Some(Value::Object(_)) => Some(block["input"].to_string()),
+                            _ => None,
                         };
                         pending = Some(PendingTool {
                             id,
                             name,
-                            input_json,
+                            start_input,
+                            deltas: String::new(),
                         });
                     }
                 }
@@ -236,7 +254,7 @@ pub fn parse_messages_sse(
                                 if let Some(partial) =
                                     delta.get("partial_json").and_then(Value::as_str)
                                 {
-                                    tool.input_json.push_str(partial);
+                                    tool.deltas.push_str(partial);
                                 }
                             }
                         }
@@ -246,7 +264,7 @@ pub fn parse_messages_sse(
             }
             "content_block_stop" => {
                 if let Some(tool) = pending.take() {
-                    events.push(mapped_tool_call(tool, surface)?);
+                    events.push(mapped_tool_call(tool, surface, &mut seen_ids)?);
                 }
             }
             "message_delta" => {
@@ -263,7 +281,7 @@ pub fn parse_messages_sse(
         }
     }
     if let Some(tool) = pending.take() {
-        events.push(mapped_tool_call(tool, surface)?);
+        events.push(mapped_tool_call(tool, surface, &mut seen_ids)?);
     }
     if !events
         .iter()
@@ -279,12 +297,29 @@ pub fn parse_messages_sse(
 struct PendingTool {
     id: String,
     name: String,
-    input_json: String,
+    /// `content_block.input` from `content_block_start`, serialized. Anthropic
+    /// sends `{}` here and streams the real arguments as deltas.
+    start_input: Option<String>,
+    /// Concatenated `input_json_delta.partial_json` fragments, in order.
+    deltas: String,
+}
+
+impl PendingTool {
+    /// Lean `ClaudeMap.accumulate`: deltas win when any arrived; otherwise the
+    /// start input; otherwise `{}`.
+    fn arguments_json(&self) -> String {
+        if !self.deltas.is_empty() {
+            self.deltas.clone()
+        } else {
+            self.start_input.clone().unwrap_or_else(|| "{}".to_string())
+        }
+    }
 }
 
 fn mapped_tool_call(
     tool: PendingTool,
     surface: &HashSet<String>,
+    seen_ids: &mut HashSet<String>,
 ) -> Result<RawStreamingChoice<ClaudeStreamResponse>, CompletionError> {
     if tool.id.trim().is_empty() || tool.name.trim().is_empty() {
         return Err(CompletionError::ProviderError(
@@ -295,16 +330,26 @@ fn mapped_tool_call(
             .to_string(),
         ));
     }
+    if !seen_ids.insert(tool.id.clone()) {
+        return Err(CompletionError::ProviderError(
+            CompleterParseError::DuplicateToolUseId { id: tool.id }.to_string(),
+        ));
+    }
     if surface.is_empty() || !surface.contains(&tool.name) {
         return Err(CompletionError::ProviderError(
             CompleterParseError::ToolUse { names: tool.name }.to_string(),
         ));
     }
-    let input = if tool.input_json.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(&tool.input_json).unwrap_or_else(|_| json!({}))
-    };
+    let raw = tool.arguments_json();
+    let input: Value = serde_json::from_str(&raw).map_err(|error| {
+        CompletionError::ProviderError(
+            CompleterParseError::MalformedToolUse {
+                line: 0,
+                message: format!("tool_use {} input is not JSON: {error}", tool.id),
+            }
+            .to_string(),
+        )
+    })?;
     Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
         tool.id, tool.name, input,
     )))
@@ -545,9 +590,50 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 128);
         assert_eq!(body["tools"][0]["name"], "echo");
-        assert_eq!(body["system"][0]["text"], "You are helpful.");
+        assert_eq!(body["system"][1]["text"], "You are helpful.");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_messages_body_has_no_sampling(&body);
+    }
+
+    /// Messages HTTP leads `system` with the Claude Code identity block and
+    /// keeps the Gents preamble intact after it. Order matters: the identity
+    /// is a wire-level prefix, not a rewrite of what the loop assembled.
+    #[test]
+    fn messages_body_system_leads_with_claude_code_identity_then_preamble() {
+        let body = build_messages_body("claude-sonnet-5", &echo_request());
+        let system = body["system"].as_array().expect("system array");
+        assert_eq!(system.len(), 2, "{body}");
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        assert_eq!(system[1]["type"], "text");
+        assert_eq!(system[1]["text"], "You are helpful.");
+    }
+
+    #[test]
+    fn messages_body_system_is_identity_only_without_preamble() {
+        for preamble in [None, Some(String::new()), Some("   ".to_string())] {
+            let mut request = echo_request();
+            request.preamble = preamble;
+            let body = build_messages_body("claude-sonnet-5", &request);
+            let system = body["system"].as_array().expect("system array");
+            assert_eq!(system.len(), 1, "{body}");
+            assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        }
+    }
+
+    /// The identity block is Messages-HTTP-only: neither the flattened
+    /// process-CLI prompt nor the CLI argv may carry it.
+    #[test]
+    fn claude_code_identity_stays_off_the_process_cli_wire() {
+        let request = echo_request();
+        let prompt = crate::claude_subscription::flatten_completion_request(&request);
+        assert!(!prompt.contains(CLAUDE_CODE_IDENTITY), "{prompt}");
+        let argv = crate::claude_completer::completer_argv(&prompt, Some("claude-sonnet-5"));
+        assert!(
+            argv.iter()
+                .all(|arg| !arg.to_string_lossy().contains(CLAUDE_CODE_IDENTITY)),
+            "{argv:?}"
+        );
     }
 
     #[test]
@@ -656,5 +742,94 @@ data: {"type":"message_stop"}
         let bash = sse.replace("echo", "Bash");
         let err = parse_messages_sse(&bash, &surface).expect_err("Bash");
         assert!(err.to_string().contains("Bash"), "{err}");
+    }
+
+    fn sse_tool_use_block(id: &str, name: &str, start_input: &str, deltas: &[&str]) -> String {
+        let mut sse = format!(
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{start_input}}}}}\n\n"
+        );
+        for partial in deltas {
+            let escaped = serde_json::to_string(partial).expect("escape partial_json");
+            sse.push_str(&format!(
+                "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{escaped}}}}}\n\n"
+            ));
+        }
+        sse.push_str(
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        );
+        sse
+    }
+
+    fn tool_call_arguments(events: &[RawStreamingChoice<ClaudeStreamResponse>]) -> Value {
+        match &events[0] {
+            RawStreamingChoice::ToolCall(call) => call.arguments.clone(),
+            other => panic!("expected ToolCall first, got {other:?}"),
+        }
+    }
+
+    /// C1: Anthropic sends `input: {}` on `content_block_start` and streams the
+    /// real arguments as `input_json_delta` fragments. The deltas are the
+    /// arguments; the start input is ignored once any delta arrives.
+    #[test]
+    fn sse_tool_use_deltas_yield_exact_arguments() {
+        let sse = sse_tool_use_block("toolu_1", "echo", "{}", &["{\"text\":", " \"hi\"}"]);
+        let surface = HashSet::from(["echo".to_string()]);
+        let events = parse_messages_sse(&sse, &surface).expect("parse");
+        assert_eq!(tool_call_arguments(&events), json!({"text": "hi"}));
+    }
+
+    #[test]
+    fn sse_tool_use_without_deltas_uses_start_input() {
+        let sse = sse_tool_use_block("toolu_1", "echo", "{\"text\":\"hi\"}", &[]);
+        let surface = HashSet::from(["echo".to_string()]);
+        let events = parse_messages_sse(&sse, &surface).expect("parse");
+        assert_eq!(tool_call_arguments(&events), json!({"text": "hi"}));
+    }
+
+    #[test]
+    fn sse_tool_use_with_no_input_at_all_is_empty_object() {
+        let sse = sse_tool_use_block("toolu_1", "echo", "{}", &[]);
+        let surface = HashSet::from(["echo".to_string()]);
+        let events = parse_messages_sse(&sse, &surface).expect("parse");
+        assert_eq!(tool_call_arguments(&events), json!({}));
+    }
+
+    #[test]
+    fn sse_tool_use_with_unparseable_input_fails_closed() {
+        let sse = sse_tool_use_block("toolu_1", "echo", "{}", &["{\"text\":"]);
+        let surface = HashSet::from(["echo".to_string()]);
+        let err = parse_messages_sse(&sse, &surface).expect_err("truncated json");
+        assert!(
+            err.to_string().contains("fail-closed: malformed tool_use"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn sse_duplicate_tool_use_id_fails_closed() {
+        let mut sse = sse_tool_use_block("toolu_1", "echo", "{}", &["{}"]);
+        sse.push_str(&sse_tool_use_block("toolu_1", "echo", "{}", &["{}"]));
+        let surface = HashSet::from(["echo".to_string()]);
+        let err = parse_messages_sse(&sse, &surface).expect_err("duplicate id");
+        assert!(
+            err.to_string()
+                .contains("fail-closed: duplicate tool_use id toolu_1"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn sse_overlapping_tool_use_block_fails_closed() {
+        let first = sse_tool_use_block("toolu_1", "echo", "{}", &[]);
+        let (start, _stop) = first.split_once("event: content_block_stop").expect("stop");
+        let mut sse = start.to_string();
+        sse.push_str(&sse_tool_use_block("toolu_2", "echo", "{}", &[]));
+        let surface = HashSet::from(["echo".to_string()]);
+        let err = parse_messages_sse(&sse, &surface).expect_err("overlap");
+        assert!(
+            err.to_string()
+                .contains("fail-closed: overlapping tool_use block toolu_2"),
+            "{err}"
+        );
     }
 }

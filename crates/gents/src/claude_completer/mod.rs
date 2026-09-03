@@ -74,6 +74,8 @@ pub enum CompleterParseError {
     ToolUse { names: String },
     #[error("fail-closed: duplicate tool_use id {id}")]
     DuplicateToolUseId { id: String },
+    #[error("fail-closed: overlapping tool_use block {id}")]
+    OverlappingToolUse { id: String },
     #[error("fail-closed: malformed tool_use at line {line}: {message}")]
     MalformedToolUse { line: usize, message: String },
     #[error("claude result is_error=true: {message}")]
