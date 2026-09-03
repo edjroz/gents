@@ -93,14 +93,16 @@ pub fn build_messages_body(model: &str, request: &CompletionRequest) -> Value {
     {
         system.push(json!({ "type": "text", "text": preamble }));
     }
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": request.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         "stream": true,
         "system": system,
         "messages": anthropic_messages(request),
-        "tools": tools,
     });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+    }
     // Do not copy `request.temperature` or merge `request.additional_params`
     // (`top_p` / `top_k` / seed / penalties ride that map).
     debug_assert!(
@@ -831,5 +833,16 @@ data: {"type":"message_stop"}
                 .contains("fail-closed: overlapping tool_use block toolu_2"),
             "{err}"
         );
+    }
+
+    /// Lean `ClaudeMap.toolsField`: the wire never carries `tools: []`.
+    #[test]
+    fn messages_body_omits_tools_key_when_surface_is_empty() {
+        let mut request = echo_request();
+        request.tools.clear();
+        let body = build_messages_body("claude-sonnet-5", &request);
+        assert!(body.get("tools").is_none(), "{body}");
+        let with_tools = build_messages_body("claude-sonnet-5", &echo_request());
+        assert_eq!(with_tools["tools"][0]["name"], "echo");
     }
 }

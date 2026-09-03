@@ -256,7 +256,7 @@ impl CompletionModel for ClaudeSubscriptionModel {
     ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
         let surface: HashSet<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
         let seat = require_process_seat()?;
-        if !request.tools.is_empty() && seat.fake_completer.is_none() {
+        if seat.fake_completer.is_none() {
             let stream =
                 crate::claude_messages::stream_messages(&self.model, &request, surface).await?;
             return Ok(StreamingCompletionResponse::stream(Box::pin(stream)));
