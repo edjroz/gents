@@ -20,7 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
-| `ClaudeCliSubscription` (Path A → A2b experimental) | In-process Claude CLI completer (no HTTP `/models`; endpoint placeholder `claude-cli://subscription`) | Claude CLI seat in process-local `--claude-config-dir` (**no** DefraDB `OAuthCredential` / oat) | Stream-json → owned loop SSE | Text-only: completer `--tools ""` + fail-closed on `tool_use`; tools never forwarded | N/A (text completer) | Full Claude model IDs on `InferenceBackend.models[]`; Anthropic/cloud env stripped from child; refuse-closed without `--claude-write-approved`; process-local `claude auth status` health (not fleet HTTP) | Completer stdout → owned completion/stream path | Unit/fake completer fixtures; live under Claude write gate |
+| `ClaudeCliSubscription` (Path A → A2b experimental) | In-process Claude CLI completer (no HTTP `/models`; endpoint placeholder `claude-cli://subscription`) | Claude CLI seat in process-local `--claude-config-dir` (**no** DefraDB `OAuthCredential` / oat) | Stream-json → owned loop SSE | Text-only: completer `--tools ""` + fail-closed on `tool_use`; tools never forwarded | N/A (text completer) | Full Claude model IDs on `InferenceBackend.models[]`; Anthropic/cloud env stripped from child; refuse-closed without `--claude-write-approved`; process-local seat-token read for health (not fleet HTTP) | Completer stdout → owned completion/stream path | Unit/fake completer fixtures; live under Claude write gate |
 
 ## Probe lifecycle and health (#640)
 
@@ -44,9 +44,10 @@ different places:
   Agent-scoped OAuth (`ChatGptCodex`, `XaiGrokOAuth`) is therefore never
   demoted by this prober — the document status governs them. `ClaudeCliSubscription`
   is also skipped for HTTP, but this runtime still runs a **process-local**
-  `claude auth status` probe (binary missing or `loggedIn=false` counts as
-  failure; K=3 demotes in `BackendHealthMap` only — the replicated document
-  is not stamped `unhealthy`).
+  seat-token read (`probe_process_seat_health`; missing or expired token counts
+  as failure; K=3 demotes in `BackendHealthMap` only — the replicated document
+  is not stamped `unhealthy`; a document born `unknown` is promoted to
+  `healthy` on the first passing cycle).
 
 Effective availability is `intent AND NOT measured-unhealthy`: a measured
 demotion removes the backend from admission and marks dependent behaviors
@@ -293,7 +294,8 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
    gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
    # Live login needs numbered Claude write approval + --claude-write-approved
    gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
-   gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+   # After login the command prints a `seat` object ({ok, detail}); the server's
+   # periodic health cycle reports the same detail on the backend document.
    ```
 
 2. Create / migrate a Claude backend (no `:8787`, no dummy API key):
@@ -356,8 +358,9 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 ### Credential storage
 
 Seat truth lives only in Claude CLI config under `--claude-config-dir`.
-`gents claude-login` / `claude-auth-probe` report status and explicitly set
-`oauth_credential_written=false`. There is no Claude refresh writer in gents for
+`gents claude-login` prints a `seat` object (`ok`, `detail`) after login and
+explicitly sets `oauth_credential_written=false`; there is no separate probe
+command — the server's health cycle reports the same seat detail. There is no Claude refresh writer in gents for
 Path A/A2b.
 
 ### Unified prod suite (A2b in-process)

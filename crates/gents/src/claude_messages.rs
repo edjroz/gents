@@ -635,6 +635,8 @@ pub async fn stream_messages(
         .get("request-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    // Reachable only for non-reqwest transports (e.g. the fixture): rig's
+    // reqwest client pre-checks the status and errors above.
     if !status.is_success() {
         let prefix = read_body_prefix(response.into_body()).await;
         return Err(non_success_error(status, request_id.as_deref(), &prefix));

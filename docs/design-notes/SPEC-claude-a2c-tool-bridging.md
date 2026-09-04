@@ -214,7 +214,7 @@ The Messages client authenticates from the **process seat** (`--claude-config-di
 - Read `$CLAUDE_CONFIG_DIR/.credentials.json` → `claudeAiOauth.accessToken` (same file the CLI uses on Linux and as the macOS Keychain fallback). Do not silently fall back to `~/.claude`.
 - Send `Authorization: Bearer <accessToken>` on `POST /v1/messages`. Do **not** send the oat as `x-api-key`.
 - **Never** upsert `OAuthCredential`, never harvest `sk-ant-oat01` into DefraDB, never log or print the token.
-- `is_agent_scoped_oauth()` stays **false**. Health stays `claude auth status` (P3).
+- `is_agent_scoped_oauth()` stays **false**. Health (superseded 2026-09-03; originally the CLI auth-status subcommand, P3) is the seat-token read the wire performs: `probe_process_seat_health` → `read_seat_access_token`, no spawn; the detail carries source + expiry, with the `claude-login` hint on Expired/MissingFile. A document born `unknown` is promoted to `healthy` on the first passing cycle, like HTTP backends.
 - Expired / missing token fail closed; operator re-runs `gents claude-login` (write-gated). Token refresh that would write the seat is **out of the first B3 slice**.
 - Live Messages send still requires `--claude-write-approved`.
 - Empty `ToolDyn[]` stays on the A2b process-CLI Completer (`--tools ""`). Tool-capable turns use Messages HTTP so the CLI never executes tools.
