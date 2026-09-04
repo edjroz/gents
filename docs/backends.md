@@ -20,6 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
+| `ClaudeCliSubscription` | Anthropic Messages HTTP (`POST /v1/messages`), the single Claude wire; no HTTP `/models` (endpoint placeholder `claude-cli://subscription`) | Subscription seat token read per request from `--claude-config-dir` (`.credentials.json` → macOS Keychain via `security(1)`); **no** DefraDB `OAuthCredential` / oat | Messages SSE, parsed incrementally into the owned loop | Tool-capable: gents tools map onto `tool_use`; unmapped names fail closed; `tools` omitted when the surface is empty | No sampling keys sent | `system[0]` = Claude Code identity block, then preamble and System rows; two `cache_control` breakpoints; full Claude model IDs on `InferenceBackend.models[]`; refuse-closed without `--claude-write-approved`; health = process-local seat-token read (not fleet HTTP) | `text_delta` / `tool_use` blocks → owned completion/stream path | Unit + SSE fixtures, Lean-generated body/stream witnesses; live under Claude write gate |
 
 ## Probe lifecycle and health (#640)
 
@@ -38,10 +39,20 @@ different places:
   10s timeout) probes the models endpoint of every enabled, probeable backend
   and keeps an in-memory `BackendHealthMap`. Hysteresis is K=3 consecutive
   failures to demote to `unhealthy`, one success to promote back (formal
-  model: `crates/gents/proofs/Proofs/BackendHealth/`). Agent-scoped OAuth
-  backends (`ChatGptCodex`, `XaiGrokOAuth`) are never fleet-probed
-  (`OAuthCredential` is per-agent) and therefore never demoted — the document
-  status governs them.
+  model: `crates/gents/proofs/Proofs/BackendHealth/`). Backends that
+  `skips_fleet_http_probe()` are never HTTP-probed (no `/models` round-trip).
+  Agent-scoped OAuth (`ChatGptCodex`, `XaiGrokOAuth`) is therefore never
+  demoted by this prober — the document status governs them. `ClaudeCliSubscription`
+  is also skipped for HTTP, but this runtime still runs a **process-local**
+  seat-token read (`probe_process_seat_health`: `.credentials.json` in
+  `--claude-config-dir`, then the macOS Keychain via `security(1)`; a missing
+  or expired token counts as failure, and `Expired` / `MissingFile` carry the
+  `gents claude-login --config-dir <dir>` hint). K=3 demotes in
+  `BackendHealthMap` only — the replicated document is not stamped
+  `unhealthy`; a document born `unknown` is promoted to `healthy` on the first
+  passing cycle. The measured detail (`source=… expires_at=…`, or the error)
+  lives in the runtime's health snapshot; the replicated document only gets
+  `probe_status` / `last_probe`.
 
 Effective availability is `intent AND NOT measured-unhealthy`: a measured
 demotion removes the backend from admission and marks dependent behaviors
@@ -251,3 +262,150 @@ fields (`chatgpt_plan_type`, `is_fedramp`) stay null/false for Grok.
 
 - `gents grok-auth-probe` / `xai-auth-probe` is read-only.
 - `gents diagnose` reports `checks.xai_auth` parallel to `checks.chatgpt_auth`.
+
+## Claude Max subscription (`ClaudeCliSubscription`, no oat)
+
+Use a Claude Max / Claude.ai subscription seat over a **single Anthropic
+Messages HTTP wire** (`POST /v1/messages`) without storing Anthropic OAuth
+tokens in DefraDB.
+
+This is **not** Anthropic Console API-key billing. The seat lives in an explicit
+Claude CLI `--config-dir` installed into the server process via
+`--claude-config-dir`; every turn reads the seat token from there
+(`.credentials.json`, else the macOS Keychain via `security(1)`) and posts to
+Messages (the backend document keeps the placeholder endpoint
+`claude-cli://subscription`). Turns are tool-capable: gents tools map onto
+`tool_use` and unmapped names fail closed. `system[0]` is the Claude Code
+identity block, followed by the gents preamble and System rows, with two
+`cache_control` breakpoints; `tools` is omitted when the surface is empty, and
+no sampling keys are sent. Full Claude model IDs are advertised from
+`InferenceBackend.models[]` (default behavior model `claude-sonnet-5`; catalog
+also lists `claude-opus-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`).
+Live Claude requires `--claude-write-approved` (refuse-closed otherwise).
+That flag means **this process may bill the Claude subscription**. It is **off
+by default** and is **not** a production default. Numbered human write approval
+is still required before setting it. Do not leave a prod `gents server`
+running with the flag unless you intend every Claude-backed turn to spend.
+
+Design notes:
+
+- [`docs/design-notes/claude-subscription-spike.md`](design-notes/claude-subscription-spike.md)
+- [`docs/design-notes/SPEC-claude-a2b-in-process.md`](design-notes/SPEC-claude-a2b-in-process.md)
+- Historical Path A packaging (loopback proxy era):
+  [`docs/design-notes/SPEC-claude-phase6-packaging.md`](design-notes/SPEC-claude-phase6-packaging.md)
+
+### Setup (isolated smoke homes only)
+
+Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
+
+1. Login / probe the Claude CLI seat (no DefraDB write):
+
+   ```sh
+   gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
+   # Live login needs numbered Claude write approval + --claude-write-approved
+   gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
+   # After login the command prints a `seat` object ({ok, detail}); the server's
+   # periodic health cycle re-reads the token and keeps the measured detail in
+   # its health snapshot (the backend document only gets probe_status/last_probe).
+   ```
+
+2. Create / migrate a Claude backend (no `:8787`, no dummy API key):
+
+   ```sh
+   gents config backend create \
+     --backend-preset claude-cli-subscription \
+     --name "Claude Max CLI subscription" \
+     --model-name claude-sonnet-5
+
+   # Expand catalog to the four full IDs (CLI update does not rewrite models[]):
+   # GraphQL upsert_InferenceBackend with models: [claude-opus-5, claude-sonnet-5,
+   # claude-haiku-4-5-20251001, claude-fable-5]
+   gents config behavior set --model-name claude-sonnet-5
+   ```
+
+   Migrating an older A2a `OpenAiCompatible` + `http://127.0.0.1:8787/v1` row:
+
+   ```sh
+   gents config backend set \
+     --backend-id "$CLAUDE_BACKEND_ID" \
+     --backend-preset claude-cli-subscription \
+     --name "Claude Max CLI subscription"
+   # Then set models[] via GraphQL as above; clear openai_wire_api / api_key.
+   # `gents config backend set --backend-preset claude-cli-subscription`
+   # clears sticky openai_wire_api on update.
+   ```
+
+3. Start the server with the process seat:
+
+   ```sh
+   # refuse-closed (no Claude spend)
+   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
+
+   # live Claude (requires numbered write approval)
+   gents server \
+     --claude-config-dir "$CLAUDE_CONFIG_DIR" \
+     --claude-write-approved
+   ```
+
+### Endpoint / billing choice
+
+| Path | Endpoint / transport | Auth / billing |
+| --- | --- | --- |
+| **Claude Max seat (this recipe)** | `ClaudeCliSubscription` + `claude-cli://subscription` (Anthropic Messages HTTP with the seat token) | Claude.ai subscription seat in `--claude-config-dir`; plan meter; **no oat in DefraDB** |
+| **Anthropic Console API key** | Anthropic API / Console-billed usage | API key / Console billing — **out of Path A/A2b scope**; do not confuse with Max seat |
+
+### Failure modes
+
+| Symptom | Meaning | Fix |
+| --- | --- | --- |
+| Health `MissingFile` / `Expired` (detail carries `gents claude-login --config-dir <dir>`) | Seat missing, expired, or wrong `--config-dir` | Re-run login against the intended config dir (write-gated); the next passing cycle promotes the backend |
+| `require_process_seat` error / missing seat | Server started without `--claude-config-dir` | Restart with `--claude-config-dir` pointing at the seat |
+| Live Claude refused | Write gate closed | Pass `--claude-write-approved` only after numbered approval |
+| Unexpected Claude spend | Server started with `--claude-write-approved` and a Claude-backed behavior | Restart **without** the flag; keep default behavior on Grok |
+| Turn fails closed on `tool_use` (unmapped name) | Claude emitted a tool that is not on the behavior's gents surface | Add the tool to the behavior's surface or leave it off; names are never aliased |
+| Expecting DefraDB Claude credential | Wrong mental model (Grok/Codex-shaped) | Path A/A2b never upserts `OAuthCredential` for Claude |
+| Fleet probe demotes Claude | Old binary still HTTP-probes the placeholder | Rebuild/restart A2b+; `ClaudeCliSubscription` skips fleet HTTP probes |
+
+### Credential storage
+
+Seat truth lives only in Claude CLI config under `--claude-config-dir`.
+`gents claude-login` prints a `seat` object (`ok`, `detail`) after login and
+explicitly sets `oauth_credential_written=false`; there is no separate probe
+command — the server's health cycle runs the same seat-token read and keeps
+the measured detail in its health snapshot. There is no Claude refresh writer
+in gents.
+
+### Unified prod suite (A2b in-process)
+
+Fold Claude into the **prod** home so Codex `/model` lists Grok **and** Claude
+together:
+
+1. Register a `ClaudeCliSubscription` backend on prod `~/.gents` with endpoint
+   `claude-cli://subscription` and the four full Claude model IDs. Keep the
+   existing Grok/`XaiGrokOAuth` backend. Do **not** create a Claude
+   `OAuthCredential`. Do **not** point Claude at `http://127.0.0.1:8787/v1`.
+2. Start the server with the process seat. Default (no spend):
+
+   ```sh
+   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
+   ```
+
+   Live Claude is opt-in after numbered write approval. Do **not** treat
+   `--claude-write-approved` as the usual prod command line:
+
+   ```sh
+   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
+   ```
+
+   Keep the **default behavior** on Grok unless you explicitly point a
+   behavior at the Claude backend.
+
+3. Chat with one surface:
+
+   ```sh
+   gents codex --remote ws://127.0.0.1:9292/
+   ```
+
+`/model` should show Grok models and the Claude Max IDs. Claude turns are
+tool-capable over the Messages wire. There is no HTTP `claude-proxy` / `:8787` path anymore —
+use `--claude-config-dir` + `ClaudeCliSubscription` only.

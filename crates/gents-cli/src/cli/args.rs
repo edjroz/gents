@@ -84,6 +84,12 @@ pub(crate) enum Command {
         about = "Probe a DefraDB-backed Grok / xAI OAuth credential (read-only)"
     )]
     GrokAuthProbe(GrokAuthProbeArgs),
+    #[command(
+        name = "claude-login",
+        about = "Sign in to the Claude subscription seat via the Claude CLI (credentials stay in --config-dir; no oat in DefraDB)",
+        after_help = "Seat auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires --claude-write-approved after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
+    )]
+    ClaudeLogin(ClaudeLoginArgs),
     #[command(name = "__native-fs-runner", hide = true)]
     NativeFsRunner(NativeFsRunnerArgs),
     #[command(about = "Inspect and control live P2P runtime connectivity", after_help = P2P_AFTER_HELP)]
@@ -512,6 +518,30 @@ pub(crate) struct GrokLoginArgs {
 }
 
 #[derive(clap::Args)]
+pub(crate) struct ClaudeLoginArgs {
+    #[arg(
+        long,
+        help = "Required Claude CLI config directory (CLAUDE_CONFIG_DIR). Explicit — no silent ~/.claude default. Seat stays here; gents does not store Anthropic oat in DefraDB."
+    )]
+    pub(crate) config_dir: PathBuf,
+    #[arg(long, help = "Path to Claude CLI binary. Defaults to `claude` on PATH")]
+    pub(crate) claude_bin: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Print planned login argv and exit without contacting Anthropic"
+    )]
+    pub(crate) dry_run: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Open the live Claude login write gate for this command. Off by default. Contacts Anthropic. --dry-run bypasses this. Numbered write approval is still required before setting it."
+    )]
+    pub(crate) claude_write_approved: bool,
+    #[arg(long, help = "Pre-populate email address on the login page")]
+    pub(crate) email: Option<String>,
+}
+
+#[derive(clap::Args)]
 pub(crate) struct ProvisionArgs {
     #[arg(long, help = "Agent home directory. Defaults to ~/.gents")]
     pub(crate) home: Option<PathBuf>,
@@ -794,6 +824,18 @@ pub(crate) struct ServeArgs {
         help = "Disable the Codex TUI endpoint (`gents codex` needs it)"
     )]
     pub(crate) no_codex_shim: bool,
+    #[arg(
+        long,
+        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Installs the process-local ClaudeCliSubscription seat for this server. Explicit — no silent ~/.claude default."
+    )]
+    pub(crate) claude_config_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "claude_config_dir",
+        help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it."
+    )]
+    pub(crate) claude_write_approved: bool,
     #[arg(
         long,
         default_value = "127.0.0.1",
@@ -1159,6 +1201,12 @@ pub(crate) enum BackendPresetArg {
     ChatGptCodex,
     #[value(name = "xai-oauth", alias = "grok-oauth")]
     XaiGrokOAuth,
+    #[value(
+        name = "claude-cli-subscription",
+        alias = "claude-subscription",
+        alias = "claude-cli"
+    )]
+    ClaudeCliSubscription,
     #[value(name = "ollama")]
     Ollama,
     #[value(name = "vllm")]
@@ -1175,6 +1223,7 @@ impl BackendPresetArg {
             Self::OpenRouter => "openrouter",
             Self::ChatGptCodex => "chatgpt-codex",
             Self::XaiGrokOAuth => "xai-oauth",
+            Self::ClaudeCliSubscription => "claude-cli-subscription",
             Self::Ollama => "ollama",
             Self::Vllm => "vllm",
             Self::LlamaCpp => "llama-cpp",
@@ -1186,6 +1235,7 @@ impl BackendPresetArg {
             Self::OpenRouter => BackendProviderKind::OpenRouter,
             Self::ChatGptCodex => BackendProviderKind::ChatGptCodex,
             Self::XaiGrokOAuth => BackendProviderKind::XaiGrokOAuth,
+            Self::ClaudeCliSubscription => BackendProviderKind::ClaudeCliSubscription,
             Self::GenericOpenAiCompatible
             | Self::OpenAi
             | Self::Ollama
@@ -1201,6 +1251,9 @@ impl BackendPresetArg {
             Self::OpenRouter => Some("https://openrouter.ai/api/v1"),
             Self::ChatGptCodex => Some(gents::chatgpt_codex::default_backend_endpoint()),
             Self::XaiGrokOAuth => Some(gents::xai_grok_oauth::default_backend_endpoint()),
+            Self::ClaudeCliSubscription => {
+                Some(gents::claude_subscription::default_backend_endpoint())
+            }
             Self::Ollama => Some(crate::DEFAULT_OLLAMA_ENDPOINT),
             Self::Vllm => Some("http://127.0.0.1:8000/v1"),
             Self::LlamaCpp => Some("http://127.0.0.1:8080/v1"),
@@ -1217,6 +1270,7 @@ impl BackendPresetArg {
             Self::LlamaCpp => Some(crate::DEFAULT_INIT_MODEL_NAME),
             Self::ChatGptCodex => Some(crate::DEFAULT_CHATGPT_CODEX_MODEL_NAME),
             Self::XaiGrokOAuth => Some(crate::DEFAULT_XAI_GROK_OAUTH_MODEL_NAME),
+            Self::ClaudeCliSubscription => Some(gents::claude_subscription::default_model_name()),
             Self::GenericOpenAiCompatible | Self::OpenAi | Self::OpenRouter | Self::Vllm => None,
         }
     }
@@ -1228,6 +1282,7 @@ impl BackendPresetArg {
             Self::GenericOpenAiCompatible
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,
@@ -1241,6 +1296,7 @@ impl BackendPresetArg {
             | Self::OpenRouter
             | Self::ChatGptCodex
             | Self::XaiGrokOAuth
+            | Self::ClaudeCliSubscription
             | Self::Ollama
             | Self::Vllm
             | Self::LlamaCpp => None,

@@ -781,6 +781,44 @@ fn demo_init_parses_pack_and_home() {
 }
 
 #[test]
+fn claude_login_parses_and_requires_config_dir() {
+    let login = Cli::try_parse_from([
+        "gents",
+        "claude-login",
+        "--config-dir",
+        "/tmp/claude-cfg",
+        "--dry-run",
+        "--email",
+        "user@example.com",
+        "--claude-write-approved",
+    ])
+    .expect("claude-login should parse");
+    match login.command {
+        Command::ClaudeLogin(args) => {
+            assert_eq!(args.config_dir, PathBuf::from("/tmp/claude-cfg"));
+            assert!(args.dry_run);
+            assert!(args.claude_write_approved);
+            assert_eq!(args.email.as_deref(), Some("user@example.com"));
+        }
+        _ => panic!("expected ClaudeLogin"),
+    }
+
+    assert!(
+        Cli::try_parse_from(["gents", "claude-login"]).is_err(),
+        "claude-login must require --config-dir"
+    );
+}
+
+#[test]
+fn claude_login_rejects_removed_console_and_sso_flags() {
+    for flag in ["--console", "--sso"] {
+        let parsed = Cli::try_parse_from(["gents", "claude-login", "--config-dir", "/tmp/x", flag]);
+        assert!(parsed.is_err(), "{flag} must be gone");
+    }
+    assert!(Cli::try_parse_from(["gents", "claude-auth-probe", "--config-dir", "/tmp/x"]).is_err());
+}
+
+#[test]
 fn every_deprecated_path_warns() {
     use crate::cli::deprecations::{deprecation_warning, DEPRECATED};
 
@@ -820,4 +858,56 @@ fn deprecated_path_required_args(path: &[&str]) -> Vec<String> {
         }
         _ => panic!("no parse fixture for deprecated path: {path:?}"),
     }
+}
+
+#[test]
+fn server_parses_a2b_claude_seat_flags() {
+    let args = parse_server(&[
+        "--claude-config-dir",
+        "/tmp/claude-config",
+        "--claude-write-approved",
+    ]);
+    assert!(args.claude_write_approved);
+    assert_eq!(
+        args.claude_config_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-config"))
+    );
+
+    let seat_only = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
+    assert!(!seat_only.claude_write_approved);
+    assert_eq!(
+        seat_only.claude_config_dir.as_deref(),
+        Some(std::path::Path::new("/tmp/claude-config"))
+    );
+}
+
+#[test]
+fn claude_write_gate_help_is_opt_in_not_prod_default() {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let server_help = cmd
+        .find_subcommand_mut("server")
+        .expect("server")
+        .render_long_help()
+        .to_string();
+    assert!(
+        server_help.contains("--claude-write-approved"),
+        "{server_help}"
+    );
+    assert!(
+        server_help.contains("Off by default") && server_help.contains("not a production default"),
+        "{server_help}"
+    );
+    assert!(
+        server_help.contains("bill"),
+        "server help should say the flag may bill Claude: {server_help}"
+    );
+
+    let mut cmd = Cli::command();
+    let login_help = cmd
+        .find_subcommand_mut("claude-login")
+        .expect("claude-login")
+        .render_long_help()
+        .to_string();
+    assert!(login_help.contains("Off by default"), "{login_help}");
 }

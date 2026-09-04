@@ -79,6 +79,34 @@ fn announce_codex_shim(
     })
 }
 
+fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
+    let Some(config_dir) = args.claude_config_dir.clone() else {
+        gents::claude_subscription::install_process_seat(None);
+        return Ok(());
+    };
+    if !config_dir.is_dir() {
+        anyhow::bail!(
+            "--claude-config-dir {} is not a directory",
+            config_dir.display()
+        );
+    }
+    let seat =
+        gents::claude_subscription::ClaudeSeatConfig::new(config_dir, args.claude_write_approved);
+    if seat.write_approved {
+        tracing::info!(
+            config_dir = %seat.config_dir.display(),
+            "Claude write gate OPEN: this process may bill Claude until restarted without --claude-write-approved"
+        );
+    } else {
+        tracing::info!(
+            config_dir = %seat.config_dir.display(),
+            "Claude seat installed; live Messages sends refuse-closed (pass --claude-write-approved only after numbered write approval)"
+        );
+    }
+    gents::claude_subscription::install_process_seat(Some(seat));
+    Ok(())
+}
+
 fn codex_shim_launch_command(websocket: &str, auth_token_env: Option<&str>) -> String {
     let mut command = if websocket == crate::DEFAULT_CODEX_REMOTE {
         "gents codex".to_string()
@@ -393,6 +421,7 @@ pub(crate) async fn serve_with_control(
     if args.codex_shim_public_url.is_some() && codex_shim_auth_token.is_none() {
         anyhow::bail!("--codex-shim-public-url requires --codex-shim-auth-token-env");
     }
+    install_claude_subscription_seat(&args)?;
     let home_dir = resolve_home_dir(args.home.as_deref());
     let data_dir = args
         .data_dir
@@ -797,6 +826,19 @@ pub(crate) async fn serve_with_control(
         None => None,
     };
 
+    let claude_subscription = if args.claude_config_dir.is_some() {
+        Some(json!({
+            "seat_installed": true,
+            "config_dir": args
+                .claude_config_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            "write_approved": args.claude_write_approved,
+        }))
+    } else {
+        None
+    };
+
     let output = json!({
         "status": "serving",
         "behavior_readiness": behavior_readiness,
@@ -814,6 +856,7 @@ pub(crate) async fn serve_with_control(
         "p2p_listen_addresses": p2p_status.get("p2p_listen_addresses").cloned().unwrap_or_else(|| json!([])),
         "p2p_admission": p2p_status.get("p2p_admission").cloned().unwrap_or(Value::Null),
         "codex_shim": codex_shim_output,
+        "claude_subscription": claude_subscription,
         "apply_root": pack_apply,
     });
     if let Some(ready) = ready {
@@ -1283,10 +1326,7 @@ mod shim_host_tests {
     #[test]
     fn shim_launch_command_references_the_token_environment_variable() {
         assert_eq!(
-            codex_shim_launch_command(
-                "wss://agent.example:443/",
-                Some("GENTS_REMOTE_TOKEN")
-            ),
+            codex_shim_launch_command("wss://agent.example:443/", Some("GENTS_REMOTE_TOKEN")),
             "gents codex --remote wss://agent.example:443/ --remote-auth-token-env GENTS_REMOTE_TOKEN"
         );
     }
@@ -1381,5 +1421,48 @@ mod shim_host_tests {
         let over_gauge = ((i64::MAX as u128) + 1).to_string();
         let huge_pending = parse_server(&["--p2p-max-pending-dags", &over_gauge]);
         assert!(resolve_server_p2p_config(tempdir.path(), &huge_pending).is_err());
+    }
+
+    /// The process seat is global; serialize the tests that install it.
+    fn lock_process_seat() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[test]
+    fn a2b_claude_config_dir_installs_seat_flags() {
+        let _guard = lock_process_seat();
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let args = parse_server(&[
+            "--claude-config-dir",
+            config_dir.to_str().unwrap(),
+            "--claude-write-approved",
+        ]);
+        install_claude_subscription_seat(&args).expect("A2b seat flags");
+        let seat = gents::claude_subscription::process_seat().expect("seat installed");
+        assert_eq!(seat.config_dir, config_dir);
+        assert!(seat.write_approved);
+    }
+
+    /// clap's `requires` enforces the orphan-flag rule: `--claude-write-approved`
+    /// without `--claude-config-dir` is a parse error.
+    #[test]
+    fn claude_seat_orphan_flags_require_config_dir() {
+        assert!(Cli::try_parse_from(["gents", "server", "--claude-write-approved"]).is_err());
+    }
+
+    #[test]
+    fn install_claude_subscription_seat_from_server_flags() {
+        let _guard = lock_process_seat();
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let args = parse_server(&["--claude-config-dir", config_dir.to_str().unwrap()]);
+        install_claude_subscription_seat(&args).expect("install seat");
+        let seat = gents::claude_subscription::process_seat().expect("seat installed");
+        assert_eq!(seat.config_dir, config_dir);
+        assert!(!seat.write_approved);
     }
 }
