@@ -4,7 +4,6 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
 use futures::StreamExt;
@@ -15,9 +14,8 @@ use rig::completion::{
 };
 use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 
-use crate::claude_completer::{parse_auth_status_logged_in, sanitize_child_env};
+use crate::claude_seat_auth::{SeatAuthError, SeatTokenSource, read_seat_access_token};
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
 ///
@@ -36,18 +34,15 @@ pub fn default_model_name() -> &'static str {
 pub struct ClaudeSeatConfig {
     pub config_dir: PathBuf,
     pub write_approved: bool,
-    /// Used only by the health probe until Task 7 replaces it with a token read.
-    pub claude_bin: PathBuf,
     /// Shared HTTP client for every Messages request on this seat.
     pub http: rig::http_client::ReqwestClient,
 }
 
 impl ClaudeSeatConfig {
-    pub fn new(config_dir: PathBuf, write_approved: bool, claude_bin: Option<PathBuf>) -> Self {
+    pub fn new(config_dir: PathBuf, write_approved: bool) -> Self {
         Self {
             config_dir,
             write_approved,
-            claude_bin: claude_bin.unwrap_or_else(|| PathBuf::from("claude")),
             http: rig::http_client::ReqwestClient::new(),
         }
     }
@@ -60,7 +55,7 @@ pub(crate) fn install_fake_seat() -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("seat tempdir");
     let config_dir = temp.path().join("claude-config");
     std::fs::create_dir_all(&config_dir).expect("config dir");
-    install_process_seat(Some(ClaudeSeatConfig::new(config_dir, false, None)));
+    install_process_seat(Some(ClaudeSeatConfig::new(config_dir, false)));
     temp
 }
 
@@ -103,55 +98,32 @@ pub fn require_process_seat() -> Result<ClaudeSeatConfig, CompletionError> {
     })
 }
 
-/// Read-only process-local seat probe for BackendHealth.
+/// Health probe = the same token read the wire performs. No spawn, no refresh.
 ///
-/// Spawns `claude auth status --json` under `CLAUDE_CONFIG_DIR`. Never `-p`,
-/// never writes oat. `Ok(())` means the binary ran and `loggedIn` is true.
-pub async fn probe_process_seat_health() -> Result<(), String> {
+/// `Ok` carries `source=file|keychain expires_at=<rfc3339|none>`; `Err` is the
+/// error's `Display` plus the `claude-login` hint for expired/missing seats.
+pub fn probe_process_seat_health() -> Result<String, String> {
     let seat = process_seat().ok_or_else(|| "process seat not installed".to_string())?;
-    probe_seat_auth_status(&seat).await
-}
-
-async fn probe_seat_auth_status(seat: &ClaudeSeatConfig) -> Result<(), String> {
-    let mut cmd = Command::new(&seat.claude_bin);
-    cmd.args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .env_clear()
-        .envs(sanitize_child_env(std::env::vars_os()))
-        .env("CLAUDE_CONFIG_DIR", &seat.config_dir);
-    for key in crate::claude_completer::STRIPPED_ENV_VARS {
-        cmd.env_remove(key);
+    match read_seat_access_token(&seat.config_dir) {
+        Ok(token) => Ok(format!(
+            "source={} expires_at={}",
+            match token.source() {
+                SeatTokenSource::File => "file",
+                SeatTokenSource::Keychain => "keychain",
+            },
+            token
+                .expires_at()
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_else(|| "none".to_string())
+        )),
+        Err(error @ (SeatAuthError::Expired { .. } | SeatAuthError::MissingFile { .. })) => {
+            Err(format!(
+                "{error}; run gents claude-login --config-dir {}",
+                seat.config_dir.display()
+            ))
+        }
+        Err(error) => Err(error.to_string()),
     }
-    let output = cmd
-        .output()
-        .await
-        .map_err(|error| format!("spawn {} auth status: {error}", seat.claude_bin.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Real `claude auth status --json` may exit non-zero when logged out while
-    // still printing JSON. Prefer `loggedIn` over the process status.
-    if let Ok(logged_in) = parse_auth_status_logged_in(stdout.trim()) {
-        return if logged_in {
-            Ok(())
-        } else {
-            Err("loggedIn=false".to_string())
-        };
-    }
-    if !output.status.success() {
-        let detail = if !stderr.trim().is_empty() {
-            stderr.trim()
-        } else {
-            stdout.trim()
-        };
-        return Err(format!(
-            "claude auth status exit {}: {detail}",
-            output.status.code().unwrap_or(-1)
-        ));
-    }
-    Err(parse_auth_status_logged_in(stdout.trim()).unwrap_err())
 }
 
 #[derive(Debug, Clone, Default)]

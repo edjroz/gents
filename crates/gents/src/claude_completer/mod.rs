@@ -5,31 +5,10 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 
-use serde_json::Value;
-
 /// Default client-facing model slug for ClaudeCliSubscription.
 ///
 /// Full Claude model IDs only — not the old invented `claude-plan` seat label.
 pub const DEFAULT_MODEL_ID: &str = "claude-sonnet-5";
-
-/// Read `loggedIn` from `claude auth status --json` stdout (read-only probe).
-///
-/// Tolerates leading/trailing noise around the JSON object, matching the CLI
-/// `claude-auth-probe` parser. Missing `loggedIn` is an error, not `false`.
-pub fn parse_auth_status_logged_in(text: &str) -> Result<bool, String> {
-    let start = text
-        .find('{')
-        .ok_or_else(|| "no JSON object in auth status output".to_string())?;
-    let end = text
-        .rfind('}')
-        .ok_or_else(|| "unterminated JSON object in auth status output".to_string())?;
-    let value: Value = serde_json::from_str(&text[start..=end])
-        .map_err(|error| format!("decode Claude auth status JSON: {error}"))?;
-    value
-        .get("loggedIn")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| "loggedIn missing from auth status JSON".to_string())
-}
 
 /// Environment variable names that must not reach the Claude CLI child.
 ///
@@ -94,17 +73,5 @@ mod tests {
                 "expected {key} stripped"
             );
         }
-    }
-
-    #[test]
-    fn parse_auth_status_logged_in_reads_logged_in() {
-        assert!(
-            parse_auth_status_logged_in(r#"{"loggedIn":true,"authMethod":"claude.ai"}"#)
-                .expect("parse")
-        );
-        assert!(!parse_auth_status_logged_in(r#"{"loggedIn":false}"#).expect("parse"));
-        assert!(parse_auth_status_logged_in("note\n{\"loggedIn\":true}\n").expect("noise"));
-        assert!(parse_auth_status_logged_in("no json").is_err());
-        assert!(parse_auth_status_logged_in(r#"{"authMethod":"claude.ai"}"#).is_err());
     }
 }

@@ -3,12 +3,14 @@
 //! Reads `claudeAiOauth.accessToken` from `--claude-config-dir/.credentials.json`
 //! first. On macOS, if that file is absent, reads the same JSON from the login
 //! Keychain service `Claude Code-credentials-{sha256(config_dir)[:8]}` (account
-//! `$USER`). Never upserts `OAuthCredential`. Never logs or `Display`s the token.
+//! `$USER`) via `security(1)`. Never upserts `OAuthCredential`. Never logs or
+//! `Display`s the token.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -20,25 +22,43 @@ pub const CREDENTIALS_FILE_NAME: &str = ".credentials.json";
 /// Keychain service prefix used by the Claude CLI on macOS.
 pub const MACOS_KEYCHAIN_SERVICE_PREFIX: &str = "Claude Code-credentials";
 
+/// Where a seat token was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatTokenSource {
+    File,
+    Keychain,
+}
+
 /// Access token read from the process seat. `Debug` is redacted; there is no
 /// `Display` impl so it cannot leak through format strings by accident.
 #[derive(Clone)]
-pub struct SeatAccessToken(String);
+pub struct SeatAccessToken {
+    token: String,
+    source: SeatTokenSource,
+    expires_at: Option<DateTime<Utc>>,
+}
 
 impl SeatAccessToken {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
     /// `Authorization` header value (`Bearer …`). Callers must not log this.
     pub fn authorization_value(&self) -> String {
-        format!("Bearer {}", self.0)
+        format!("Bearer {}", self.token)
+    }
+
+    pub fn source(&self) -> SeatTokenSource {
+        self.source
+    }
+
+    pub fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.expires_at
     }
 }
 
 impl fmt::Debug for SeatAccessToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SeatAccessToken(redacted)")
+        f.debug_struct("SeatAccessToken")
+            .field("source", &self.source)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
     }
 }
 
@@ -46,18 +66,18 @@ impl fmt::Debug for SeatAccessToken {
 pub enum SeatAuthError {
     #[error("Claude seat credentials file missing: {path}")]
     MissingFile { path: String },
-    #[error("Claude seat credentials file is not valid JSON")]
-    InvalidJson,
-    #[error("Claude seat credentials file has no claudeAiOauth.accessToken")]
-    MissingAccessToken,
-    #[error("Claude seat OAuth access token is expired; re-run gents claude-login")]
-    Expired,
+    #[error("Claude seat credentials file unreadable: {path}: {message}")]
+    Io { path: String, message: String },
+    #[error("Claude seat credentials malformed: {reason}")]
+    Malformed { reason: String },
+    #[error("Claude seat Keychain item not found for service {service}")]
+    KeychainNotFound { service: String },
     #[error("Claude seat Keychain access denied for service {service}")]
     KeychainAccessDenied { service: String },
-    #[error("Claude seat Keychain item missing for service {service}")]
-    KeychainMissing { service: String },
     #[error("Claude seat Keychain account is unset (USER)")]
     KeychainAccountUnset,
+    #[error("Claude seat OAuth access token expired at {expires_at}")]
+    Expired { expires_at: String },
 }
 
 #[derive(Deserialize)]
@@ -88,17 +108,12 @@ fn read_seat_access_token_at(
     now_millis: fn() -> i64,
 ) -> Result<SeatAccessToken, SeatAuthError> {
     match read_credentials_file(config_dir) {
-        Ok(raw) => parse_credentials(&raw, now_millis),
+        Ok(raw) => parse_credentials(&raw, now_millis, SeatTokenSource::File),
         Err(file_err @ SeatAuthError::MissingFile { .. }) => {
             match read_macos_keychain_credentials(config_dir) {
-                Ok(raw) => parse_credentials(&raw, now_millis),
-                Err(SeatAuthError::KeychainAccessDenied { service }) => {
-                    Err(SeatAuthError::KeychainAccessDenied { service })
-                }
-                Err(SeatAuthError::KeychainAccountUnset) => {
-                    Err(SeatAuthError::KeychainAccountUnset)
-                }
-                Err(_) => Err(file_err),
+                Ok(raw) => parse_credentials(&raw, now_millis, SeatTokenSource::Keychain),
+                Err(SeatAuthError::KeychainNotFound { .. }) => Err(file_err),
+                Err(other) => Err(other),
             }
         }
         Err(error) => Err(error),
@@ -107,27 +122,55 @@ fn read_seat_access_token_at(
 
 fn read_credentials_file(config_dir: &Path) -> Result<String, SeatAuthError> {
     let path = credentials_path(config_dir);
-    std::fs::read_to_string(&path).map_err(|_| SeatAuthError::MissingFile {
-        path: path.display().to_string(),
+    std::fs::read_to_string(&path).map_err(|error| {
+        let path = path.display().to_string();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            SeatAuthError::MissingFile { path }
+        } else {
+            SeatAuthError::Io {
+                path,
+                message: error.to_string(),
+            }
+        }
     })
 }
 
-fn parse_credentials(raw: &str, now_millis: fn() -> i64) -> Result<SeatAccessToken, SeatAuthError> {
+fn parse_credentials(
+    raw: &str,
+    now_millis: fn() -> i64,
+    source: SeatTokenSource,
+) -> Result<SeatAccessToken, SeatAuthError> {
+    // Never echo the decode error: serde may quote file bytes.
     let parsed: CredentialsFile =
-        serde_json::from_str(raw).map_err(|_| SeatAuthError::InvalidJson)?;
+        serde_json::from_str(raw).map_err(|_| SeatAuthError::Malformed {
+            reason: "credentials are not valid JSON".to_string(),
+        })?;
     let oauth = parsed
         .claude_ai_oauth
-        .ok_or(SeatAuthError::MissingAccessToken)?;
-    if let Some(expires_at) = oauth.expires_at {
-        if expires_at > 0 && expires_at <= now_millis() {
-            return Err(SeatAuthError::Expired);
+        .ok_or_else(|| SeatAuthError::Malformed {
+            reason: "no claudeAiOauth object".to_string(),
+        })?;
+    let expires_at = oauth.expires_at.filter(|millis| *millis > 0);
+    if let Some(expires_at) = expires_at {
+        if expires_at <= now_millis() {
+            return Err(SeatAuthError::Expired {
+                expires_at: DateTime::<Utc>::from_timestamp_millis(expires_at)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| expires_at.to_string()),
+            });
         }
     }
     let token = oauth.access_token.unwrap_or_default().trim().to_string();
     if token.is_empty() {
-        return Err(SeatAuthError::MissingAccessToken);
+        return Err(SeatAuthError::Malformed {
+            reason: "no claudeAiOauth.accessToken".to_string(),
+        });
     }
-    Ok(SeatAccessToken(token))
+    Ok(SeatAccessToken {
+        token,
+        source,
+        expires_at: expires_at.and_then(DateTime::<Utc>::from_timestamp_millis),
+    })
 }
 
 pub fn credentials_path(config_dir: &Path) -> PathBuf {
@@ -136,38 +179,39 @@ pub fn credentials_path(config_dir: &Path) -> PathBuf {
 
 /// Claude CLI Keychain service for this `--claude-config-dir`.
 ///
-/// SHA-256 of the path bytes as given (no canonicalize, no trailing slash).
+/// SHA-256 of the absolute path bytes (relative paths are resolved against
+/// the current directory; no canonicalize, no trailing-slash normalization).
 pub fn macos_keychain_service_name(config_dir: &Path) -> String {
+    let absolute = if config_dir.is_absolute() {
+        config_dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(config_dir))
+            .unwrap_or_else(|_| config_dir.to_path_buf())
+    };
     let digest = format!(
         "{:x}",
-        Sha256::digest(config_dir.as_os_str().as_encoded_bytes())
+        Sha256::digest(absolute.to_string_lossy().as_bytes())
     );
     format!("{MACOS_KEYCHAIN_SERVICE_PREFIX}-{}", &digest[..8])
 }
 
+#[cfg(target_os = "macos")]
 fn read_macos_keychain_credentials(config_dir: &Path) -> Result<String, SeatAuthError> {
-    #[cfg(target_os = "macos")]
-    {
-        let service = macos_keychain_service_name(config_dir);
-        let account = macos_keychain_account()?;
-        // Prefer `security(1)`: an unsigned debug `gents` is not on the
-        // item ACL, so SecKeychainFindGenericPassword can block on a prompt
-        // that never appears in a headless server. The CLI already returns
-        // for this operator session.
-        match read_macos_keychain_via_security_cli(&service, &account) {
-            Ok(raw) => Ok(raw),
-            Err(cli_err) => match read_macos_keychain_via_framework(&service, &account) {
-                Ok(raw) => Ok(raw),
-                Err(_) => Err(cli_err),
-            },
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err(SeatAuthError::MissingFile {
-            path: credentials_path(config_dir).display().to_string(),
-        })
-    }
+    let service = macos_keychain_service_name(config_dir);
+    let account = macos_keychain_account()?;
+    // `security(1)` only: an unsigned debug `gents` is not on the item ACL,
+    // so SecKeychainFindGenericPassword can block on a prompt that never
+    // appears in a headless server. The CLI already returns for this
+    // operator session.
+    read_macos_keychain_via_security_cli(&service, &account)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_macos_keychain_credentials(config_dir: &Path) -> Result<String, SeatAuthError> {
+    Err(SeatAuthError::KeychainNotFound {
+        service: macos_keychain_service_name(config_dir),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -180,34 +224,9 @@ fn macos_keychain_account() -> Result<String, SeatAuthError> {
         .ok_or(SeatAuthError::KeychainAccountUnset)
 }
 
+/// `security(1)` exit status for `errSecItemNotFound`.
 #[cfg(target_os = "macos")]
-const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-
-#[cfg(target_os = "macos")]
-fn read_macos_keychain_via_framework(
-    service: &str,
-    account: &str,
-) -> Result<String, SeatAuthError> {
-    let keychain =
-        security_framework::os::macos::keychain::SecKeychain::default().map_err(|_| {
-            SeatAuthError::KeychainAccessDenied {
-                service: service.to_string(),
-            }
-        })?;
-    match keychain.find_generic_password(service, account) {
-        Ok((password, _)) => String::from_utf8(password.as_ref().to_vec())
-            .map_err(|_| SeatAuthError::InvalidJson)
-            .map(|raw| raw.trim().to_string()),
-        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {
-            Err(SeatAuthError::KeychainMissing {
-                service: service.to_string(),
-            })
-        }
-        Err(_) => Err(SeatAuthError::KeychainAccessDenied {
-            service: service.to_string(),
-        }),
-    }
-}
+const SECURITY_CLI_ITEM_NOT_FOUND: i32 = 44;
 
 #[cfg(target_os = "macos")]
 fn read_macos_keychain_via_security_cli(
@@ -216,22 +235,29 @@ fn read_macos_keychain_via_security_cli(
 ) -> Result<String, SeatAuthError> {
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-s", service, "-a", account, "-w"])
+        .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
         .map_err(|_| SeatAuthError::KeychainAccessDenied {
             service: service.to_string(),
         })?;
     if !output.status.success() {
-        return Err(SeatAuthError::KeychainMissing {
-            service: service.to_string(),
-        });
+        return Err(
+            if output.status.code() == Some(SECURITY_CLI_ITEM_NOT_FOUND) {
+                SeatAuthError::KeychainNotFound {
+                    service: service.to_string(),
+                }
+            } else {
+                SeatAuthError::KeychainAccessDenied {
+                    service: service.to_string(),
+                }
+            },
+        );
     }
-    let raw = String::from_utf8(output.stdout).map_err(|_| SeatAuthError::InvalidJson)?;
-    let trimmed = raw.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(SeatAuthError::MissingAccessToken);
-    }
-    Ok(trimmed)
+    let raw = String::from_utf8(output.stdout).map_err(|_| SeatAuthError::Malformed {
+        reason: "keychain payload is not UTF-8".to_string(),
+    })?;
+    Ok(raw.trim().to_string())
 }
 
 fn now_millis() -> i64 {
@@ -244,120 +270,102 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
-    fn temp_dir(label: &str) -> PathBuf {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.scratch/claude-spike/tmp")
-            .join(label);
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("temp dir");
-        root
-    }
-
-    fn write_credentials(dir: &Path, body: &str) {
-        fs::write(credentials_path(dir), body).expect("write credentials");
+    fn write_credentials(dir: &Path, expires_at_millis: i64) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(".credentials.json"),
+            format!(
+                r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-TESTTOKEN","expiresAt":{expires_at_millis}}}}}"#
+            ),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn reads_access_token_from_credentials_file() {
-        let dir = temp_dir("seat-auth-ok");
-        write_credentials(
-            &dir,
-            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-test-token","expiresAt":9999999999999}}"#,
-        );
-        let token = read_seat_access_token(&dir).expect("token");
-        assert_eq!(token.as_str(), "sk-ant-oat01-test-token");
+    fn valid_file_reports_source_and_expiry() {
+        let temp = tempfile::tempdir().unwrap();
+        write_credentials(temp.path(), 4_102_444_800_000); // 2100-01-01
+        let token = read_seat_access_token_at(temp.path(), || 1_000).expect("token");
+        assert_eq!(token.source(), SeatTokenSource::File);
         assert_eq!(
-            token.authorization_value(),
-            "Bearer sk-ant-oat01-test-token"
+            token.expires_at().map(|t| t.to_rfc3339()).as_deref(),
+            Some("2100-01-01T00:00:00+00:00")
         );
-        let debug = format!("{token:?}");
-        assert_eq!(debug, "SeatAccessToken(redacted)");
         assert!(
-            !debug.contains("sk-ant-oat01-test-token"),
-            "Debug must not include the token: {debug}"
+            !format!("{token:?}").contains("TESTTOKEN"),
+            "Debug must redact"
         );
+        assert_eq!(token.authorization_value(), "Bearer sk-ant-oat01-TESTTOKEN");
     }
 
     #[test]
-    fn missing_file_is_an_error_without_a_token() {
-        let dir = temp_dir("seat-auth-missing");
-        let err = read_seat_access_token(&dir).expect_err("missing");
-        let msg = err.to_string();
-        assert!(msg.contains(".credentials.json"), "{msg}");
-        assert!(!msg.contains("sk-ant-oat01"));
+    fn expired_file_reports_expires_at() {
+        let temp = tempfile::tempdir().unwrap();
+        write_credentials(temp.path(), 1_000);
+        let err = read_seat_access_token_at(temp.path(), || 2_000).expect_err("expired");
+        assert!(matches!(err, SeatAuthError::Expired { .. }));
+        assert!(err.to_string().contains("1970-01-01T00:00:01"), "{err}");
+        assert!(!err.to_string().contains("TESTTOKEN"));
     }
 
     #[test]
-    fn missing_access_token_field_fail_closes() {
-        let dir = temp_dir("seat-auth-no-token");
-        write_credentials(&dir, r#"{"claudeAiOauth":{}}"#);
-        let err = read_seat_access_token(&dir).expect_err("no token");
-        assert_eq!(err, SeatAuthError::MissingAccessToken);
-        assert!(!err.to_string().contains("sk-ant-oat01"));
+    fn malformed_file_is_malformed_not_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".credentials.json"), "{not json").unwrap();
+        let err = read_seat_access_token_at(temp.path(), || 0).expect_err("malformed");
+        assert!(matches!(err, SeatAuthError::Malformed { .. }), "{err:?}");
     }
 
     #[test]
-    fn invalid_json_does_not_echo_file_bytes() {
-        let dir = temp_dir("seat-auth-bad-json");
-        write_credentials(
-            &dir,
-            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-secret""#,
+    fn missing_access_token_field_is_malformed() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"   "}}"#,
+        )
+        .unwrap();
+        let err = read_seat_access_token_at(temp.path(), || 0).expect_err("blank");
+        assert!(matches!(err, SeatAuthError::Malformed { .. }), "{err:?}");
+        assert!(!err.to_string().contains("sk-ant"));
+    }
+
+    #[test]
+    fn missing_file_and_missing_keychain_item_is_missing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let err = read_seat_access_token_at(temp.path(), || 0).expect_err("missing");
+        // On macOS the Keychain lookup for this fresh dir yields KeychainNotFound,
+        // which folds back to MissingFile so the operator hint names the path.
+        assert!(matches!(err, SeatAuthError::MissingFile { .. }), "{err:?}");
+        assert!(err.to_string().contains(&temp.path().display().to_string()));
+    }
+
+    #[test]
+    fn macos_keychain_service_is_sha256_prefix_of_absolute_config_dir() {
+        let dir = Path::new("relative/claude-config");
+        let absolute = std::env::current_dir().unwrap().join(dir);
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(absolute.to_string_lossy().as_bytes())
         );
-        let err = read_seat_access_token(&dir).expect_err("invalid json");
-        assert_eq!(err, SeatAuthError::InvalidJson);
-        assert!(
-            !err.to_string().contains("sk-ant-oat01-secret"),
-            "{}",
-            err.to_string()
-        );
-    }
-
-    #[test]
-    fn expired_token_fail_closes() {
-        let dir = temp_dir("seat-auth-expired");
-        write_credentials(
-            &dir,
-            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-expired","expiresAt":1}}"#,
-        );
-        let err = read_seat_access_token_at(&dir, || 2).expect_err("expired");
-        assert_eq!(err, SeatAuthError::Expired);
-        assert!(!err.to_string().contains("sk-ant-oat01-expired"));
-    }
-
-    #[test]
-    fn empty_access_token_is_missing() {
-        let dir = temp_dir("seat-auth-blank");
-        write_credentials(&dir, r#"{"claudeAiOauth":{"accessToken":"   "}}"#);
-        let err = read_seat_access_token(&dir).expect_err("blank");
-        assert_eq!(err, SeatAuthError::MissingAccessToken);
-    }
-
-    #[test]
-    fn macos_keychain_service_is_sha256_prefix_of_config_dir() {
-        let dir = Path::new("/Users/edjroz/Repos/source/gents/.scratch/claude-spike/claude-config");
         assert_eq!(
             macos_keychain_service_name(dir),
-            "Claude Code-credentials-6b2dc9d7"
+            format!("Claude Code-credentials-{}", &digest[..8])
         );
         assert_ne!(
-            macos_keychain_service_name(Path::new(
-                "/Users/edjroz/Repos/source/gents/.scratch/claude-spike/claude-config/"
-            )),
-            "Claude Code-credentials-6b2dc9d7",
+            macos_keychain_service_name(Path::new("relative/claude-config/")),
+            macos_keychain_service_name(dir),
             "trailing slash must not silently match"
         );
     }
 
     #[test]
     fn keychain_error_display_does_not_include_secrets() {
-        let denied = SeatAuthError::KeychainAccessDenied {
-            service: "Claude Code-credentials-6b2dc9d7".into(),
+        let err = SeatAuthError::KeychainAccessDenied {
+            service: "Claude Code-credentials-deadbeef".into(),
         };
-        let msg = denied.to_string();
-        assert!(msg.contains("Claude Code-credentials-6b2dc9d7"), "{msg}");
-        assert!(!msg.contains("sk-ant-oat01"));
-        assert!(!msg.contains("Bearer"));
+        assert!(err.to_string().contains("Claude Code-credentials-deadbeef"));
+        assert!(!err.to_string().contains("sk-ant"));
+        assert!(!err.to_string().contains("Bearer"));
     }
 }

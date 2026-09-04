@@ -235,18 +235,18 @@ pub async fn probe_backends_cycle(
             == crate::backend_provider::BackendProviderKind::ClaudeCliSubscription
         {
             probed_ids.insert(backend.backend_id.clone());
-            let (event, error_text) = match tokio::time::timeout(
-                options.probe_timeout,
-                crate::claude_subscription::probe_process_seat_health(),
-            )
-            .await
+            let (event, error_text) = match crate::claude_subscription::probe_process_seat_health()
             {
-                Ok(Ok(())) => (ProbeEvent::ProbeSuccess, None),
-                Ok(Err(reason)) => (ProbeEvent::ProbeFail, Some(reason)),
-                Err(_) => (ProbeEvent::ProbeFail, Some("probe timed out".to_string())),
+                Ok(detail) => {
+                    tracing::debug!(
+                        backend_id = %backend.backend_id,
+                        detail = %detail,
+                        "claude seat probe ok"
+                    );
+                    (ProbeEvent::ProbeSuccess, None)
+                }
+                Err(reason) => (ProbeEvent::ProbeFail, Some(reason)),
             };
-            // Process-local measurement only — never promote/demote the
-            // replicated InferenceBackend document from this path.
             record_probe_event(
                 backend,
                 event,
@@ -255,7 +255,6 @@ pub async fn probe_backends_cycle(
                 health_map,
                 options,
                 &mut outcome,
-                false,
             )
             .await;
             continue;
@@ -292,7 +291,6 @@ pub async fn probe_backends_cycle(
             health_map,
             options,
             &mut outcome,
-            true,
         )
         .await;
     }
@@ -301,7 +299,6 @@ pub async fn probe_backends_cycle(
     outcome
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn record_probe_event(
     backend: &InferenceBackend,
     event: ProbeEvent,
@@ -310,7 +307,6 @@ async fn record_probe_event(
     health_map: &BackendHealthMap,
     options: &BackendProberOptions,
     outcome: &mut ProbeCycleOutcome,
-    promote_document_on_unknown: bool,
 ) {
     let previous = health_map.get_model(&backend.backend_id).await;
     let next = step_backend(previous, event, options.failure_threshold_k);
@@ -338,10 +334,7 @@ async fn record_probe_event(
         );
     }
 
-    if promote_document_on_unknown
-        && event == ProbeEvent::ProbeSuccess
-        && backend.probe_status == UNKNOWN_PROBE_STATUS
-    {
+    if event == ProbeEvent::ProbeSuccess && backend.probe_status == UNKNOWN_PROBE_STATUS {
         outcome.promotable.push(backend.backend_id.clone());
     }
 
@@ -695,57 +688,41 @@ mod tests {
         claude
     }
 
-    fn write_auth_status_fake(logged_in: bool) -> (std::path::PathBuf, std::path::PathBuf) {
-        // Keep the fake under the crate scratch dir so tests don't need tempfile
-        // if the crate doesn't depend on it — use std env temp + unique name.
-        let dir = std::env::temp_dir().join(format!(
-            "gents-claude-auth-fake-{}-{:?}-{}",
-            std::process::id(),
-            std::thread::current().id(),
-            if logged_in { "in" } else { "out" }
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("auth fake dir");
-        let path = dir.join("claude-auth-fake.sh");
-        let body = if logged_in {
-            "#!/bin/sh\necho '{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}'\n"
-        } else {
-            "#!/bin/sh\necho '{\"loggedIn\":false}'\n"
-        };
-        std::fs::write(&path, body).expect("write fake");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).unwrap();
+    fn install_claude_seat_with_credentials(expires_at_millis: Option<i64>) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("seat dir");
+        let config_dir = temp.path().join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        if let Some(expires) = expires_at_millis {
+            std::fs::write(
+                config_dir.join(".credentials.json"),
+                format!(
+                    r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-TEST","expiresAt":{expires}}}}}"#
+                ),
+            )
+            .unwrap();
         }
-        (dir, path)
-    }
-
-    fn install_claude_seat(claude_bin: std::path::PathBuf) {
-        let config_dir = std::env::temp_dir().join("gents-claude-probe-config");
-        let _ = std::fs::create_dir_all(&config_dir);
         crate::claude_subscription::install_process_seat(Some(
-            crate::claude_subscription::ClaudeSeatConfig::new(config_dir, false, Some(claude_bin)),
+            crate::claude_subscription::ClaudeSeatConfig::new(config_dir, false),
         ));
+        temp
     }
 
     #[tokio::test]
     async fn cycle_does_not_http_probe_claude_cli_subscription_backends() {
         let _guard = crate::claude_subscription::lock_process_seat_for_test();
         crate::claude_subscription::install_process_seat(None);
-        let options = probe_options();
-        let client = reqwest::Client::new();
-        let health_map = BackendHealthMap::new();
-
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
         // Dead HTTP endpoint would fail if discover_models ran. Seat is unset
         // so the process-local probe fails without touching HTTP.
         let mut claude = claude_backend();
         claude.endpoint = "http://127.0.0.1:1/v1".to_string();
         let outcome =
             probe_backends_cycle(&client, &[claude], Utc::now(), &health_map, &options).await;
-        assert!(outcome.promotable.is_empty(), "never writes the shared doc");
+        assert!(outcome.promotable.is_empty());
         let snap = health_map.get("claude").await.expect("measured entry");
         assert_eq!(snap.state, BackendHealthState::Degraded);
         assert_eq!(snap.failure_count, 1);
@@ -753,35 +730,36 @@ mod tests {
             snap.last_error
                 .as_deref()
                 .is_some_and(|e| e.contains("process seat not installed")),
-            "seat miss is the failure, not HTTP: {:?}",
+            "{:?}",
             snap.last_error
         );
         assert!(!health_map.measured_blocks_routing("claude").await);
-        crate::claude_subscription::install_process_seat(None);
     }
 
     #[tokio::test]
-    async fn cycle_demotes_claude_after_k_logged_out_probes_without_doc_promotion() {
+    async fn cycle_demotes_claude_after_k_expired_probes_with_login_hint() {
         let _guard = crate::claude_subscription::lock_process_seat_for_test();
-        let (dir, fake) = write_auth_status_fake(false);
-        install_claude_seat(fake);
-        let options = probe_options();
-        let client = reqwest::Client::new();
-        let health_map = BackendHealthMap::new();
+        let _seat = install_claude_seat_with_credentials(Some(1_000));
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
         let backends = vec![claude_backend()];
-
         for cycle in 1..=3u32 {
             let outcome =
                 probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
             assert!(outcome.promotable.is_empty());
             let snap = health_map.get("claude").await.expect("entry");
             assert_eq!(snap.failure_count, cycle);
+            let err = snap.last_error.clone().unwrap_or_default();
             assert!(
-                snap.last_error
-                    .as_deref()
-                    .is_some_and(|e| e.contains("loggedIn=false")),
-                "{:?}",
-                snap.last_error
+                err.contains("expired at") && err.contains("gents claude-login --config-dir"),
+                "{err}"
+            );
+            assert!(
+                !err.contains("sk-ant"),
+                "probe error must not carry the token"
             );
             if cycle < 3 {
                 assert_eq!(snap.state, BackendHealthState::Degraded);
@@ -792,42 +770,43 @@ mod tests {
                 assert!(health_map.measured_blocks_routing("claude").await);
             }
         }
-
         crate::claude_subscription::install_process_seat(None);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn cycle_marks_claude_healthy_when_auth_status_logged_in() {
+    async fn cycle_marks_claude_healthy_and_promotes_unknown_document() {
         let _guard = crate::claude_subscription::lock_process_seat_for_test();
-        let (dir, fake) = write_auth_status_fake(true);
-        install_claude_seat(fake);
-        let options = probe_options();
-        let client = reqwest::Client::new();
-        let health_map = BackendHealthMap::new();
+        let _seat = install_claude_seat_with_credentials(Some(4_102_444_800_000));
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
         let mut claude = claude_backend();
         claude.probe_status = "unknown".to_string();
         let outcome =
             probe_backends_cycle(&client, &[claude], Utc::now(), &health_map, &options).await;
-        assert!(
-            outcome.promotable.is_empty(),
-            "Claude success must not stamp the replicated document"
+        assert_eq!(
+            outcome.promotable,
+            vec!["claude".to_string()],
+            "C9: unknown Claude document promotes on first pass"
         );
         let snap = health_map.get("claude").await.expect("entry");
         assert_eq!(snap.state, BackendHealthState::Healthy);
         assert_eq!(snap.failure_count, 0);
         assert!(snap.last_error.is_none());
         crate::claude_subscription::install_process_seat(None);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn cycle_fails_claude_when_cli_binary_is_missing() {
+    async fn cycle_fails_claude_when_credentials_are_missing() {
         let _guard = crate::claude_subscription::lock_process_seat_for_test();
-        install_claude_seat(std::path::PathBuf::from("/no/such/claude-binary"));
-        let options = probe_options();
-        let client = reqwest::Client::new();
-        let health_map = BackendHealthMap::new();
+        let _seat = install_claude_seat_with_credentials(None);
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
         probe_backends_cycle(
             &client,
             &[claude_backend()],
@@ -838,12 +817,11 @@ mod tests {
         .await;
         let snap = health_map.get("claude").await.expect("entry");
         assert_eq!(snap.state, BackendHealthState::Degraded);
+        let err = snap.last_error.clone().unwrap_or_default();
         assert!(
-            snap.last_error
-                .as_deref()
-                .is_some_and(|e| e.contains("spawn")),
-            "{:?}",
-            snap.last_error
+            err.contains("credentials file missing")
+                && err.contains("gents claude-login --config-dir"),
+            "{err}"
         );
         crate::claude_subscription::install_process_seat(None);
     }

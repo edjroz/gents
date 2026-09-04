@@ -90,11 +90,8 @@ fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
             config_dir.display()
         );
     }
-    let seat = gents::claude_subscription::ClaudeSeatConfig::new(
-        config_dir,
-        args.claude_write_approved,
-        args.claude_bin.clone(),
-    );
+    let seat =
+        gents::claude_subscription::ClaudeSeatConfig::new(config_dir, args.claude_write_approved);
     if seat.write_approved {
         tracing::info!(
             config_dir = %seat.config_dir.display(),
@@ -1428,8 +1425,15 @@ mod shim_host_tests {
         assert!(resolve_server_p2p_config(tempdir.path(), &huge_pending).is_err());
     }
 
+    /// The process seat is global; serialize the tests that install it.
+    fn lock_process_seat() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn a2b_claude_config_dir_installs_seat_flags() {
+        let _guard = lock_process_seat();
         let temp = tempfile::tempdir().unwrap();
         let config_dir = temp.path().join("claude-config");
         std::fs::create_dir_all(&config_dir).unwrap();
@@ -1445,15 +1449,15 @@ mod shim_host_tests {
     }
 
     /// clap's `requires` enforces the orphan-flag rule: `--claude-write-approved`
-    /// (and `--claude-bin`) without `--claude-config-dir` is a parse error.
+    /// without `--claude-config-dir` is a parse error.
     #[test]
     fn claude_seat_orphan_flags_require_config_dir() {
         assert!(Cli::try_parse_from(["gents", "server", "--claude-write-approved"]).is_err());
-        assert!(Cli::try_parse_from(["gents", "server", "--claude-bin", "/usr/bin/claude"]).is_err());
     }
 
     #[test]
     fn install_claude_subscription_seat_from_server_flags() {
+        let _guard = lock_process_seat();
         let temp = tempfile::tempdir().unwrap();
         let config_dir = temp.path().join("claude-config");
         std::fs::create_dir_all(&config_dir).unwrap();

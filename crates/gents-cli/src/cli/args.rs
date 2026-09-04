@@ -855,12 +855,6 @@ pub(crate) struct ServeArgs {
     pub(crate) claude_config_dir: Option<PathBuf>,
     #[arg(
         long,
-        requires = "claude_config_dir",
-        help = "Optional Claude CLI binary. Defaults to `claude` on PATH"
-    )]
-    pub(crate) claude_bin: Option<PathBuf>,
-    #[arg(
-        long,
         default_value_t = false,
         requires = "claude_config_dir",
         help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it."

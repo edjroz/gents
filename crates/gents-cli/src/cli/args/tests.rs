@@ -880,17 +880,11 @@ fn server_parses_a2b_claude_seat_flags() {
         "--claude-config-dir",
         "/tmp/claude-config",
         "--claude-write-approved",
-        "--claude-bin",
-        "/usr/local/bin/claude",
     ]);
     assert!(args.claude_write_approved);
     assert_eq!(
         args.claude_config_dir.as_deref(),
         Some(std::path::Path::new("/tmp/claude-config"))
-    );
-    assert_eq!(
-        args.claude_bin.as_deref(),
-        Some(std::path::Path::new("/usr/local/bin/claude"))
     );
 
     let seat_only = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
