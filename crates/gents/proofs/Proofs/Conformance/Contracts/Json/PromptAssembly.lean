@@ -107,4 +107,42 @@ def promptAssemblyTurnBudgetCaseJson
 def promptAssemblyTurnBudgetCasesJson : String :=
   jsonArray (promptAssemblyTurnBudgetCases.map promptAssemblyTurnBudgetCaseJson)
 
+def promptAssemblyClaudeMapCaseJson
+    (witness : PromptAssemblyClaudeMapCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"surface\":" ++ jsonStringArray witness.surface ++ ","
+    ++ "\"blocks\":" ++ jsonStringArray witness.blocks ++ ","
+    ++ "\"outcome\":" ++ jsonString witness.outcome ++ ","
+    ++ "\"ids\":" ++ jsonNatArray witness.ids
+    ++ "}"
+
+def promptAssemblyClaudeMapCasesJson : String :=
+  jsonArray (promptAssemblyClaudeMapCases.map promptAssemblyClaudeMapCaseJson)
+
+def promptAssemblyClaudeBodyCaseJson (witness : PromptAssemblyClaudeBodyCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"preamble\":" ++ jsonOptionalString witness.preamble ++ ","
+    ++ "\"rows\":" ++ jsonStringArray witness.rows ++ ","
+    ++ "\"tools\":" ++ jsonStringArray witness.tools ++ ","
+    ++ "\"system\":" ++ jsonStringArray witness.system ++ ","
+    ++ "\"tools_present\":" ++ boolString witness.toolsPresent
+    ++ "}"
+
+def promptAssemblyClaudeBodyCasesJson : String :=
+  jsonArray (promptAssemblyClaudeBodyCases.map promptAssemblyClaudeBodyCaseJson)
+
+def promptAssemblyClaudeStreamCaseJson (witness : PromptAssemblyClaudeStreamCase) : String :=
+  "{"
+    ++ "\"name\":" ++ jsonString witness.name ++ ","
+    ++ "\"surface\":" ++ jsonStringArray witness.surface ++ ","
+    ++ "\"events\":" ++ jsonStringArray witness.events ++ ","
+    ++ "\"outcome\":" ++ jsonString witness.outcome ++ ","
+    ++ "\"calls\":" ++ jsonStringArray witness.calls
+    ++ "}"
+
+def promptAssemblyClaudeStreamCasesJson : String :=
+  jsonArray (promptAssemblyClaudeStreamCases.map promptAssemblyClaudeStreamCaseJson)
+
 end Conformance.Contracts
