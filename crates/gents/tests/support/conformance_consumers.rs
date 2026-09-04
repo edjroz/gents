@@ -672,11 +672,25 @@ pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
             function: "generated_sanitize_cases_drive_the_production_sanitizer",
         },
         ConformanceConsumer::RustTest {
-            id: "conformance::prompt_assembly::generated_claude_map_cases_drive_the_completer_parser",
+            id: "conformance::prompt_assembly::generated_claude_map_cases_drive_the_messages_parser",
             package: "gents",
             source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
             module_path: "conformance::prompt_assembly",
-            function: "generated_claude_map_cases_drive_the_completer_parser",
+            function: "generated_claude_map_cases_drive_the_messages_parser",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::prompt_assembly::generated_claude_body_cases_drive_the_body_builder",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
+            module_path: "conformance::prompt_assembly",
+            function: "generated_claude_body_cases_drive_the_body_builder",
+        },
+        ConformanceConsumer::RustTest {
+            id: "conformance::prompt_assembly::generated_claude_stream_cases_drive_the_messages_parser",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/prompt_assembly.rs",
+            module_path: "conformance::prompt_assembly",
+            function: "generated_claude_stream_cases_drive_the_messages_parser",
         },
         ConformanceConsumer::RustTest {
             id: "agent::daemon::request::budget_contract_tests::generated_budget_cases_drive_dynamic_output_compaction_trigger",

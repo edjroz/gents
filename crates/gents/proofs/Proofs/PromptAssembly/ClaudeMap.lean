@@ -37,12 +37,14 @@ inductive MapError where
   | emptySurface
   | unmappedName (name : String)
   | duplicateId (id : ToolCallId)
+  | overlappingBlock (id : ToolCallId)
   deriving DecidableEq, Repr
 
 def errorName : MapError → String
   | .emptySurface => "emptySurface"
   | .unmappedName name => "unmappedName:" ++ name
   | .duplicateId id => "duplicateId:" ++ toString id
+  | .overlappingBlock id => "overlappingBlock:" ++ toString id
 
 def blockTag : Block → String
   | .text => "text"
@@ -161,5 +163,184 @@ theorem mappedKind_text : mappedKind ∅ = .ordinary := by
 theorem mappedKind_calls (id : ToolCallId) :
     mappedKind {id} = .assistantToolCalls {id} := by
   simp [mappedKind]
+
+/-! ## System assembly (single-wire Messages HTTP)
+
+`Transcript.MessageRole` has no `system`; the wire-side row type here carries
+just what assembly needs: a `System` row's text, or "some other row". -/
+
+inductive Msg where
+  | system (text : String)
+  | other (tag : String)
+  deriving DecidableEq, Repr
+
+/-- The Claude Code identity block. `system[0]` on every request; the seat's
+oat routes on it. Checked against Rust `CLAUDE_CODE_IDENTITY` by the vocab test. -/
+def identity : String := "You are Claude Code, Anthropic's official CLI for Claude."
+
+/-- Pull `System` rows out in order; everything else is untouched. -/
+def splitSystem : List Msg → List String × List Msg
+  | [] => ([], [])
+  | .system t :: rest =>
+    let (sys, others) := splitSystem rest
+    (t :: sys, others)
+  | m :: rest =>
+    let (sys, others) := splitSystem rest
+    (sys, m :: others)
+
+def systemBlocks (preamble : Option String) (rows : List String) : List String :=
+  identity :: (preamble.toList ++ rows)
+
+theorem systemBlocks_head (preamble : Option String) (rows : List String) :
+    (systemBlocks preamble rows).head? = some identity := rfl
+
+theorem systemBlocks_tail_verbatim (preamble : Option String) (rows : List String) :
+    (systemBlocks preamble rows).tail = preamble.toList ++ rows := rfl
+
+def isSystem : Msg → Bool
+  | .system _ => true
+  | .other _ => false
+
+/-- The remaining list contains no `System` row, and the split loses nothing:
+the system texts are exactly the `System` rows in order. -/
+theorem splitSystem_partition (msgs : List Msg) :
+    (splitSystem msgs).2.all (fun m => !isSystem m) = true ∧
+    (splitSystem msgs).1 = (msgs.filter isSystem).map (fun m =>
+      match m with | .system t => t | .other _ => "") ∧
+    (splitSystem msgs).2 = msgs.filter (fun m => !isSystem m) := by
+  induction msgs with
+  | nil => simp [splitSystem]
+  | cons m rest ih =>
+    obtain ⟨h1, h2, h3⟩ := ih
+    cases m with
+    | system t => simp [splitSystem, isSystem, List.filter, h1, h2, h3]
+    | other tag => simp [splitSystem, isSystem, List.filter, h1, h2, h3]
+
+/-- `tools` is absent from the wire for an empty surface. -/
+def toolsField : List String → Option (List String)
+  | [] => none
+  | tools => some tools
+
+theorem toolsField_empty : toolsField [] = none := rfl
+
+theorem toolsField_nonempty (t : String) (rest : List String) :
+    toolsField (t :: rest) = some (t :: rest) := rfl
+
+/-! ## Tool-block accumulation (SSE)
+
+One `tool_use` block arrives as `content_block_start` (with a usually-empty
+`input`), zero or more `input_json_delta` fragments, and `content_block_stop`.
+Defect C1 seeded the start input and appended deltas (`{}{...}`). Here the
+deltas are the arguments whenever any arrived. -/
+
+inductive StreamEvent where
+  | text (t : String)
+  | start (id : ToolCallId) (name : String) (input : Option String)
+  | delta (fragment : String)
+  | stop
+  deriving DecidableEq, Repr
+
+def accumulate (start : Option String) (deltas : List String) : String :=
+  match deltas with
+  | [] => start.getD "{}"
+  | _ => String.join deltas
+
+theorem accumulate_ignores_start_when_streamed (start : Option String)
+    (deltas : List String) (h : deltas ≠ []) :
+    accumulate start deltas = String.join deltas := by
+  cases deltas with
+  | nil => exact absurd rfl h
+  | cons d rest => rfl
+
+theorem accumulate_uses_start_when_no_deltas (start : Option String) :
+    accumulate start [] = start.getD "{}" := rfl
+
+structure Pending where
+  id : ToolCallId
+  name : String
+  start : Option String
+  /-- Deltas in reverse arrival order (consed); flushed as `deltas.reverse`. -/
+  deltas : List String
+  deriving Repr
+
+structure StreamState where
+  pending : Option Pending
+  seen : List ToolCallId
+  out : List (ToolCallId × String)
+  deriving Repr
+
+def StreamState.init : StreamState := { pending := none, seen := [], out := [] }
+
+/-- Flush the pending block: duplicate id, then surface map, then arguments. -/
+def flush (surface : Surface) (st : StreamState) : Except MapError StreamState :=
+  match st.pending with
+  | none => .ok st
+  | some p =>
+    if p.id ∈ st.seen then
+      .error (.duplicateId p.id)
+    else
+      match mapToolUse surface p.id p.name with
+      | .error e => .error e
+      | .ok _ =>
+        .ok { pending := none
+            , seen := p.id :: st.seen
+            , out := st.out ++ [(p.id, accumulate p.start p.deltas.reverse)] }
+
+def step (surface : Surface) (st : StreamState) : StreamEvent → Except MapError StreamState
+  | .text _ => .ok st
+  | .start id name input =>
+    match st.pending with
+    | some _ => .error (.overlappingBlock id)
+    | none => .ok { st with pending := some { id := id, name := name, start := input, deltas := [] } }
+  | .delta fragment =>
+    match st.pending with
+    | none => .ok st
+    | some p => .ok { st with pending := some { p with deltas := fragment :: p.deltas } }
+  | .stop => flush surface st
+
+/-- Left to right, first error wins; end of stream flushes an unterminated block. -/
+def runStream (surface : Surface) (events : List StreamEvent) :
+    Except MapError (List (ToolCallId × String)) :=
+  (events.foldlM (step surface) StreamState.init >>= flush surface) |>.map (·.out)
+
+/-- `Except` ships no `DecidableEq`; the `runStream` witnesses below decide
+equality on `Except MapError (List (ToolCallId × String))`. -/
+instance instDecidableEqExcept {ε α : Type} [DecidableEq ε] [DecidableEq α] :
+    DecidableEq (Except ε α)
+  | .error a, .error b =>
+    if h : a = b then .isTrue (h ▸ rfl) else .isFalse (fun e => h (Except.error.inj e))
+  | .error _, .ok _ => .isFalse nofun
+  | .ok _, .error _ => .isFalse nofun
+  | .ok a, .ok b =>
+    if h : a = b then .isTrue (h ▸ rfl) else .isFalse (fun e => h (Except.ok.inj e))
+
+theorem runStream_text_only (surface : Surface) :
+    runStream surface [.text "hi"] = .ok [] := rfl
+
+theorem runStream_deltas_win :
+    runStream {("echo" : String)}
+      [.start 1 "echo" (some "{}"), .delta "{\"text\":", .delta " \"hi\"}", .stop] =
+      .ok [(1, "{\"text\": \"hi\"}")] := by
+  native_decide
+
+theorem runStream_start_input_without_deltas :
+    runStream {("echo" : String)} [.start 1 "echo" (some "{\"a\":1}"), .stop] =
+      .ok [(1, "{\"a\":1}")] := by
+  native_decide
+
+theorem runStream_overlap :
+    runStream {("echo" : String)} [.start 1 "echo" none, .start 2 "echo" none, .stop] =
+      .error (.overlappingBlock 2) := by
+  native_decide
+
+theorem runStream_duplicate :
+    runStream {("echo" : String)}
+      [.start 1 "echo" none, .stop, .start 1 "echo" none, .stop] =
+      .error (.duplicateId 1) := by
+  native_decide
+
+theorem runStream_unterminated_flushes :
+    runStream {("echo" : String)} [.start 1 "echo" none, .delta "{}"] = .ok [(1, "{}")] := by
+  native_decide
 
 end PromptAssembly.ClaudeMap

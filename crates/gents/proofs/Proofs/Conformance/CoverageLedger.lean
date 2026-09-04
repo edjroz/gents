@@ -995,7 +995,17 @@ def caseCoverage : List CoverageEntry :=
   , tagged (consumerCoverage
       "prompt_assembly_cases"
       "PromptAssemblyClaudeMapCases"
-      "conformance::prompt_assembly::generated_claude_map_cases_drive_the_completer_parser")
+      "conformance::prompt_assembly::generated_claude_map_cases_drive_the_messages_parser")
+      "prompt-assembly" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "prompt_assembly_cases"
+      "PromptAssemblyClaudeBodyCases"
+      "conformance::prompt_assembly::generated_claude_body_cases_drive_the_body_builder")
+      "prompt-assembly" [Surface.runtimeInternal]
+  , tagged (consumerCoverage
+      "prompt_assembly_cases"
+      "PromptAssemblyClaudeStreamCases"
+      "conformance::prompt_assembly::generated_claude_stream_cases_drive_the_messages_parser")
       "prompt-assembly" [Surface.runtimeInternal]
   , tagged (consumerCoverage
       "rendered_capture_cases"
