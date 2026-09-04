@@ -161,4 +161,4 @@ Requires numbered Claude write approval:
 
 ## Exit into A2b
 
-A2a success bar is green in real use. A2b is locked as a first-class in-process Claude provider (`ClaudeCliSubscription`) with `--claude-config-dir` + `--claude-write-approved`; HTTP proxy deletion follows cutover — see [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md).
+A2a success bar is green in real use. A2b is locked as a first-class in-process Claude provider (`ClaudeCliSubscription`) with `--claude-config-dir` + `--claude-write-approved` [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]; HTTP proxy deletion follows cutover — see [`SPEC-claude-a2b-in-process.md`](./SPEC-claude-a2b-in-process.md).

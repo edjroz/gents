@@ -93,7 +93,7 @@ If Lean is large, land (1)+(2) then (3) as stacked commits/PRs **of B2**, not as
 
 - Empty surface: keep A2b process CLI (`--tools ""`).
 - Tool-capable turns: Anthropic `POST /v1/messages` with gents `tools` JSON. Auth from the seat file (C2 lock). Capture as HTTP persist-before-send (do not drop the fence). Map `tool_use` with B2 allow-list. Next turn is native `tool_result` content, not CLI flatten.
-- Gated live: numbered `--claude-write-approved`; harmless gents tool (not Claude `Bash`); `AgentToolCall ≥ 1`; oat Claude `OAuthCredential` = 0; no `:8787`; no CLI Bash in the workdir. Evidence under `.scratch/claude-spike/logs/`.
+- Gated live: numbered `--claude-write-approved`; harmless gents tool (not Claude `Bash`); `AgentToolCall ≥ 1`; oat Claude `OAuthCredential` = 0; no `:8787`; no CLI Bash in the workdir. Evidence under `.scratch/claude-spike/logs/`. [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]
 
 **Stop after:** live tool parity for native+MCP (and skills already on the gents surface). Still no Claude-owned tools. Still no spawn unless B4.
 

@@ -90,19 +90,11 @@ fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
             config_dir.display()
         );
     }
-    let seat =
-        gents::claude_subscription::ClaudeSeatConfig::new(config_dir, args.claude_write_approved);
-    if seat.write_approved {
-        tracing::info!(
-            config_dir = %seat.config_dir.display(),
-            "Claude write gate OPEN: this process may bill Claude until restarted without --claude-write-approved"
-        );
-    } else {
-        tracing::info!(
-            config_dir = %seat.config_dir.display(),
-            "Claude seat installed; live Messages sends refuse-closed (pass --claude-write-approved only after numbered write approval)"
-        );
-    }
+    let seat = gents::claude_subscription::ClaudeSeatConfig::new(config_dir);
+    tracing::info!(
+        config_dir = %seat.config_dir.display(),
+        "Claude seat installed: live Messages sends enabled for this process (token read per request; refused closed if unreadable)"
+    );
     gents::claude_subscription::install_process_seat(Some(seat));
     Ok(())
 }
@@ -833,7 +825,6 @@ pub(crate) async fn serve_with_control(
                 .claude_config_dir
                 .as_ref()
                 .map(|p| p.display().to_string()),
-            "write_approved": args.claude_write_approved,
         }))
     } else {
         None
@@ -1435,21 +1426,15 @@ mod shim_host_tests {
         let temp = tempfile::tempdir().unwrap();
         let config_dir = temp.path().join("claude-config");
         std::fs::create_dir_all(&config_dir).unwrap();
-        let args = parse_server(&[
-            "--claude-config-dir",
-            config_dir.to_str().unwrap(),
-            "--claude-write-approved",
-        ]);
+        let args = parse_server(&["--claude-config-dir", config_dir.to_str().unwrap()]);
         install_claude_subscription_seat(&args).expect("A2b seat flags");
         let seat = gents::claude_subscription::process_seat().expect("seat installed");
         assert_eq!(seat.config_dir, config_dir);
-        assert!(seat.write_approved);
     }
 
-    /// clap's `requires` enforces the orphan-flag rule: `--claude-write-approved`
-    /// without `--claude-config-dir` is a parse error.
+    /// The retired server write gate must not parse any more.
     #[test]
-    fn claude_seat_orphan_flags_require_config_dir() {
+    fn claude_server_write_gate_flag_is_gone() {
         assert!(Cli::try_parse_from(["gents", "server", "--claude-write-approved"]).is_err());
     }
 
@@ -1463,6 +1448,5 @@ mod shim_host_tests {
         install_claude_subscription_seat(&args).expect("install seat");
         let seat = gents::claude_subscription::process_seat().expect("seat installed");
         assert_eq!(seat.config_dir, config_dir);
-        assert!(!seat.write_approved);
     }
 }
