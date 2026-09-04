@@ -77,7 +77,7 @@ A2b explicitly deferred this:
 - Map into existing `gents_protocol::message::ToolCall` / `StreamedAssistantContent::ToolCall` so `loop_stream` / `dispatch_tool` / `hook.on_tool_call` do not grow a Claude-only dispatch path.
 - Fake-completer fixtures (JSONL with `tool_use`, paired results, unmapped names). [Superseded 2026-09-03 by the single wire: test-only SSE fixtures queued through `claude_messages` (`#[cfg(test)]`).]
 - Name translation tables (if any) and argv/env construction.
-- Server flags already exist (`--claude-config-dir`, `--claude-write-approved`, `--claude-bin`, workdir, log-dir). [Superseded 2026-09-03 by the single wire: only `--claude-config-dir` and `--claude-write-approved` remain; `--claude-bin`, workdir and log-dir went with the process completer.]
+- Server flags already exist (`--claude-config-dir`, `--claude-write-approved`, `--claude-bin`, workdir, log-dir). [Superseded 2026-09-03 by the single wire: only `--claude-config-dir` and `--claude-write-approved` remain; `--claude-bin`, workdir and log-dir went with the process completer.] [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]
 
 **A2c rule:** if implementation discovers that Claude cannot emit a homomorphism into the native tool-call/result row model, **stop and extend Lean** (likely a Claude provider-view in `PromptAssembly`). Do not flatten unpaired `tool_use` into ordinary assistant text to “make the CLI work.”
 
@@ -87,7 +87,7 @@ A2b explicitly deferred this:
 |---|---|---|
 | 1 | Seat in explicit `--claude-config-dir` | Yes — process-local, not DefraDB secrets |
 | 2 | No Claude oat / `OAuthCredential` | Yes — `is_agent_scoped_oauth()` stays **false** |
-| 3 | Numbered human write approval before live Claude | Yes — `--claude-write-approved` refuse-closed |
+| 3 | Numbered human write approval before live Claude | Yes — `--claude-write-approved` refuse-closed [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.] |
 | 4 | No `claude --bare`; strip `ANTHROPIC_*` (and cloud Anthropic provider vars) in the child | Yes |
 | 5 | Full Claude model IDs only | Yes |
 | 6 | Prod `~/.gents` unification / `./target/debug/gents` | Yes |
@@ -216,7 +216,7 @@ The Messages client authenticates from the **process seat** (`--claude-config-di
 - **Never** upsert `OAuthCredential`, never harvest `sk-ant-oat01` into DefraDB, never log or print the token.
 - `is_agent_scoped_oauth()` stays **false**. Health (superseded 2026-09-03; originally the CLI auth-status subcommand, P3) is the seat-token read the wire performs: `probe_process_seat_health` → `read_seat_access_token`, no spawn; the detail carries source + expiry, with the `claude-login` hint on Expired/MissingFile. A document born `unknown` is promoted to `healthy` on the first passing cycle, like HTTP backends.
 - Expired / missing token fail closed; operator re-runs `gents claude-login` (write-gated). Token refresh that would write the seat is **out of the first B3 slice**.
-- Live Messages send still requires `--claude-write-approved`.
+- Live Messages send still requires `--claude-write-approved`. [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]
 - Empty `ToolDyn[]` stays on the A2b process-CLI Completer (`--tools ""`). Tool-capable turns use Messages HTTP so the CLI never executes tools.
 - macOS Keychain (`Claude Code-credentials`, keyed to `CLAUDE_CONFIG_DIR`) is the CLI’s primary store; file read is the testable/Linux path. Keychain read is a follow-on if the file is absent — not a DefraDB lookup.
 
@@ -242,7 +242,7 @@ Match the existing tool-call lifecycle. Do not add a Claude-only “best effort�
 - Duplicate `toolu_*` / gents `call_id` in one turn (Provider multiplicity boundary; production already drops duplicate keys).
 - `tool_use` on a text-only behavior (empty `ToolDyn[]`) — keep A2b reject.
 - Persist-before-send failure — no spawn (RenderedCapture `capture_failure_blocks_send`).
-- Live path without `--claude-write-approved`.
+- Live path without `--claude-write-approved`. [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]
 - Preflight block (`ToolExecution.preflight`: unreachable MCP → `serviceUnavailable`; invalid schema → `argumentInvalid`; policy hold/deny unchanged).
 
 **Must still persist and audit:**

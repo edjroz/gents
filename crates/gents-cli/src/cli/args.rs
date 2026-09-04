@@ -826,16 +826,9 @@ pub(crate) struct ServeArgs {
     pub(crate) no_codex_shim: bool,
     #[arg(
         long,
-        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Installs the process-local ClaudeCliSubscription seat for this server. Explicit — no silent ~/.claude default."
+        help = "Claude CLI config directory (CLAUDE_CONFIG_DIR). Installs the process-local ClaudeCliSubscription seat for this server. Explicit — no silent ~/.claude default. Installing the seat enables live Claude sends for this process; the seat is refused closed when its token cannot be read."
     )]
     pub(crate) claude_config_dir: Option<PathBuf>,
-    #[arg(
-        long,
-        default_value_t = false,
-        requires = "claude_config_dir",
-        help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it."
-    )]
-    pub(crate) claude_write_approved: bool,
     #[arg(
         long,
         default_value = "127.0.0.1",

@@ -862,27 +862,20 @@ fn deprecated_path_required_args(path: &[&str]) -> Vec<String> {
 
 #[test]
 fn server_parses_a2b_claude_seat_flags() {
-    let args = parse_server(&[
-        "--claude-config-dir",
-        "/tmp/claude-config",
-        "--claude-write-approved",
-    ]);
-    assert!(args.claude_write_approved);
+    let args = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
     assert_eq!(
         args.claude_config_dir.as_deref(),
         Some(std::path::Path::new("/tmp/claude-config"))
     );
 
-    let seat_only = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
-    assert!(!seat_only.claude_write_approved);
-    assert_eq!(
-        seat_only.claude_config_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/claude-config"))
-    );
+    let no_seat = parse_server(&[]);
+    assert!(no_seat.claude_config_dir.is_none());
 }
 
+/// The server write gate was retired: `--claude-config-dir` is the opt-in and
+/// its help says so. `claude-login` keeps its own write gate.
 #[test]
-fn claude_write_gate_help_is_opt_in_not_prod_default() {
+fn claude_seat_help_names_the_config_dir_opt_in() {
     use clap::CommandFactory;
     let mut cmd = Cli::command();
     let server_help = cmd
@@ -891,16 +884,13 @@ fn claude_write_gate_help_is_opt_in_not_prod_default() {
         .render_long_help()
         .to_string();
     assert!(
-        server_help.contains("--claude-write-approved"),
+        !server_help.contains("--claude-write-approved"),
         "{server_help}"
     );
     assert!(
-        server_help.contains("Off by default") && server_help.contains("not a production default"),
+        server_help.contains("Installing the seat enables live Claude sends for this process")
+            && server_help.contains("refused closed when its token cannot be read"),
         "{server_help}"
-    );
-    assert!(
-        server_help.contains("bill"),
-        "server help should say the flag may bill Claude: {server_help}"
     );
 
     let mut cmd = Cli::command();

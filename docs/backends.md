@@ -20,7 +20,7 @@ agent loop itself.
 | `XaiGrokOAuth` | Grok CLI subscription proxy (`cli-chat-proxy.grok.com`); Responses by default, `openai_wire: chat_completions` honored (the proxy serves both; the official client picks per model) | `OAuthCredential` document (`provider=xai-oauth`), refreshed by owner runtime | SSE | Function tools through rig | Not forced (several Grok models reject `reasoning.effort`) | Sets `store: false` when absent (Responses); injects Grok-CLI identity headers (`x-xai-token-auth`, `x-authenticateresponse`, `x-grok-client-*`, User-Agent) + bearer on every wire | Adds missing SSE `Content-Type` when omitted | Unit tests for headers/bearer/wire; live replay planned by #545 |
 | `OpenRouter` | Chat Completions | API key | SSE | Function tools through rig | Provider-dependent | Adds OpenRouter provider preference `require_parameters: true` | Standard rig OpenRouter handling | Planned by #545 |
 | local OpenAI-compatible servers | Responses or Chat Completions depending on server support | Usually none/local key | SSE varies by server | Function tools when server supports them | Reasoning parser support varies; Chat Completions sends `enable_thinking` for vLLM-style servers | Same as `OpenAiCompatible`; operators may need Chat Completions fallback for servers without `/v1/responses` | Standard rig OpenAI handling | Planned by #545 |
-| `ClaudeCliSubscription` | Anthropic Messages HTTP (`POST /v1/messages`), the single Claude wire; no HTTP `/models` (endpoint placeholder `claude-cli://subscription`) | Subscription seat token read per request from `--claude-config-dir` (`.credentials.json` → macOS Keychain via `security(1)`); **no** DefraDB `OAuthCredential` / oat | Messages SSE, parsed incrementally into the owned loop | Tool-capable: gents tools map onto `tool_use`; unmapped names fail closed; `tools` omitted when the surface is empty | No sampling keys sent | `system[0]` = Claude Code identity block, then preamble and System rows; two `cache_control` breakpoints; full Claude model IDs on `InferenceBackend.models[]`; refuse-closed without `--claude-write-approved`; health = process-local seat-token read (not fleet HTTP) | `text_delta` / `tool_use` blocks → owned completion/stream path | Unit + SSE fixtures, Lean-generated body/stream witnesses; live under Claude write gate |
+| `ClaudeCliSubscription` | Anthropic Messages HTTP (`POST /v1/messages`), the single Claude wire; no HTTP `/models` (endpoint placeholder `claude-cli://subscription`) | Subscription seat token read per request from `--claude-config-dir` (`.credentials.json` → macOS Keychain via `security(1)`); **no** DefraDB `OAuthCredential` / oat | Messages SSE, parsed incrementally into the owned loop | Tool-capable: gents tools map onto `tool_use`; unmapped names fail closed; `tools` omitted when the surface is empty | No sampling keys sent | `system[0]` = Claude Code identity block, then preamble and System rows; two `cache_control` breakpoints; full Claude model IDs on `InferenceBackend.models[]`; live whenever the seat is installed (`--claude-config-dir`), refuse-closed when the seat token cannot be read; health = process-local seat-token read (not fleet HTTP) | `text_delta` / `tool_use` blocks → owned completion/stream path | Unit + SSE fixtures, Lean-generated body/stream witnesses; live only with an installed seat |
 
 ## Probe lifecycle and health (#640)
 
@@ -281,11 +281,13 @@ identity block, followed by the gents preamble and System rows, with two
 no sampling keys are sent. Full Claude model IDs are advertised from
 `InferenceBackend.models[]` (default behavior model `claude-sonnet-5`; catalog
 also lists `claude-opus-5`, `claude-haiku-4-5-20251001`, `claude-fable-5`).
-Live Claude requires `--claude-write-approved` (refuse-closed otherwise).
-That flag means **this process may bill the Claude subscription**. It is **off
-by default** and is **not** a production default. Numbered human write approval
-is still required before setting it. Do not leave a prod `gents server`
-running with the flag unless you intend every Claude-backed turn to spend.
+Live Claude is opt-in per process: `gents server --claude-config-dir <dir>`
+installs the seat, and an installed seat means **this process bills the Claude
+subscription** on every Claude-backed turn. Without the flag there is no seat
+and no Claude send. With the seat, the token is read per request and a
+missing, unreadable, or expired seat refuses closed at that read. Do not leave
+a prod `gents server` running with the seat unless you intend every
+Claude-backed turn to spend.
 
 Design notes:
 
@@ -302,7 +304,8 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 
    ```sh
    gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
-   # Live login needs numbered Claude write approval + --claude-write-approved
+   # Live login needs numbered Claude write approval + the login's own
+   # --claude-write-approved flag (the server has no such flag)
    gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
    # After login the command prints a `seat` object ({ok, detail}); the server's
    # periodic health cycle re-reads the token and keeps the measured detail in
@@ -338,13 +341,11 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 3. Start the server with the process seat:
 
    ```sh
-   # refuse-closed (no Claude spend)
-   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
+   # dry run: no seat, no Claude spend
+   gents server
 
-   # live Claude (requires numbered write approval)
-   gents server \
-     --claude-config-dir "$CLAUDE_CONFIG_DIR" \
-     --claude-write-approved
+   # live Claude: the installed seat is the opt-in (this process bills the seat)
+   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
    ```
 
 ### Endpoint / billing choice
@@ -360,8 +361,8 @@ Do **not** use prod `~/.gents` or a personal `~/.claude` for packaging smokes.
 | --- | --- | --- |
 | Health `MissingFile` / `Expired` (detail carries `gents claude-login --config-dir <dir>`) | Seat missing, expired, or wrong `--config-dir` | Re-run login against the intended config dir (write-gated); the next passing cycle promotes the backend |
 | `require_process_seat` error / missing seat | Server started without `--claude-config-dir` | Restart with `--claude-config-dir` pointing at the seat |
-| Live Claude refused | Write gate closed | Pass `--claude-write-approved` only after numbered approval |
-| Unexpected Claude spend | Server started with `--claude-write-approved` and a Claude-backed behavior | Restart **without** the flag; keep default behavior on Grok |
+| Live Claude refused | Seat token unreadable/expired | `gents claude-login --config-dir <dir>` |
+| Unexpected Claude spend | Server started with `--claude-config-dir` and a Claude-backed behavior | Start without the seat flag for dry runs |
 | Turn fails closed on `tool_use` (unmapped name) | Claude emitted a tool that is not on the behavior's gents surface | Add the tool to the behavior's surface or leave it off; names are never aliased |
 | Expecting DefraDB Claude credential | Wrong mental model (Grok/Codex-shaped) | Path A/A2b never upserts `OAuthCredential` for Claude |
 | Fleet probe demotes Claude | Old binary still HTTP-probes the placeholder | Rebuild/restart A2b+; `ClaudeCliSubscription` skips fleet HTTP probes |
@@ -384,17 +385,17 @@ together:
    `claude-cli://subscription` and the four full Claude model IDs. Keep the
    existing Grok/`XaiGrokOAuth` backend. Do **not** create a Claude
    `OAuthCredential`. Do **not** point Claude at `http://127.0.0.1:8787/v1`.
-2. Start the server with the process seat. Default (no spend):
+2. Start the server. Default (no seat, no spend):
+
+   ```sh
+   gents server
+   ```
+
+   Live Claude is opt-in: installing the seat is what enables billable sends,
+   so treat this as the deliberate prod command line, not the default:
 
    ```sh
    gents server --claude-config-dir "$CLAUDE_CONFIG_DIR"
-   ```
-
-   Live Claude is opt-in after numbered write approval. Do **not** treat
-   `--claude-write-approved` as the usual prod command line:
-
-   ```sh
-   gents server --claude-config-dir "$CLAUDE_CONFIG_DIR" --claude-write-approved
    ```
 
    Keep the **default behavior** on Grok unless you explicitly point a

@@ -96,7 +96,7 @@ P3 does not technically depend on P1/P2 (health never touches stdout). Keep it s
 
 ## P4 — Write-gate productization
 
-**Problem.** `--claude-write-approved` is a spike kill switch. This home currently runs with it **always on**, so every default-behavior turn is billable. SPEC still requires numbered human approval before live writes.
+**Problem.** `--claude-write-approved` is a spike kill switch. This home currently runs with it **always on**, so every default-behavior turn is billable. SPEC still requires numbered human approval before live writes. [Retired 2026-09-04: the server write gate was removed; `--claude-config-dir` is the opt-in.]
 
 **Change (keep refuse-closed).**
 
