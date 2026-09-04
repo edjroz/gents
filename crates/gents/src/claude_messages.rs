@@ -586,13 +586,6 @@ pub async fn stream_messages(
     let fixture = take_messages_sse_fixture();
     #[cfg(not(test))]
     let fixture: Option<String> = None;
-    if fixture.is_none() && !seat.write_approved {
-        return Err(CompletionError::ProviderError(
-            "live Claude path refused: pass --claude-write-approved after an explicit numbered write approval"
-                .to_string(),
-        ));
-    }
-
     let body = build_messages_body(model, request);
     let body_bytes = serde_json::to_vec(&body).map_err(|error| {
         CompletionError::ProviderError(format!("encode Claude Messages body: {error}"))
@@ -617,7 +610,7 @@ pub async fn stream_messages(
         tracing::info!(
             model = %model,
             config_dir = %seat.config_dir.display(),
-            "live Claude Messages HTTP send (write gate open; this process may bill Claude)"
+            "live Claude Messages HTTP send (seat installed; this process bills the Claude subscription)"
         );
     }
     let http_request = builder.body(Bytes::from(body_bytes)).map_err(|error| {

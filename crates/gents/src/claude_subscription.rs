@@ -1,6 +1,7 @@
 //! Claude subscription seat: process-local `--claude-config-dir` state, one
-//! Messages HTTP wire (`claude_messages`), refuse-closed without
-//! `--claude-write-approved`.
+//! Messages HTTP wire (`claude_messages`). Live sends happen whenever a seat
+//! is installed; a seat whose token cannot be read refuses closed at the
+//! token read.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -33,29 +34,28 @@ pub fn default_model_name() -> &'static str {
 #[derive(Debug, Clone)]
 pub struct ClaudeSeatConfig {
     pub config_dir: PathBuf,
-    pub write_approved: bool,
     /// Shared HTTP client for every Messages request on this seat.
     pub http: rig::http_client::ReqwestClient,
 }
 
 impl ClaudeSeatConfig {
-    pub fn new(config_dir: PathBuf, write_approved: bool) -> Self {
+    pub fn new(config_dir: PathBuf) -> Self {
         Self {
             config_dir,
-            write_approved,
             http: rig::http_client::ReqwestClient::new(),
         }
     }
 }
 
-/// Test-only: install a refuse-closed seat under a fresh tempdir. The
-/// returned guard owns the directory; keep it alive for the test.
+/// Test-only: install a seat under a fresh tempdir with no credentials, so a
+/// live send refuses closed at the token read. The returned guard owns the
+/// directory; keep it alive for the test.
 #[cfg(test)]
 pub(crate) fn install_fake_seat() -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("seat tempdir");
     let config_dir = temp.path().join("claude-config");
     std::fs::create_dir_all(&config_dir).expect("config dir");
-    install_process_seat(Some(ClaudeSeatConfig::new(config_dir, false)));
+    install_process_seat(Some(ClaudeSeatConfig::new(config_dir)));
     temp
 }
 

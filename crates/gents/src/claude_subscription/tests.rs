@@ -41,12 +41,20 @@ fn echo_tool_request() -> CompletionRequest {
 }
 
 #[tokio::test]
-async fn live_path_refuses_without_write_approval() {
+async fn live_path_refuses_without_a_readable_seat() {
     let _guard = lock_process_seat_for_test();
     let _seat = install_fake_seat();
     let model = ClaudeSubscriptionClient::new().completion_model("claude-sonnet-5");
     let err = model.completion(ping_request()).await.expect_err("refused");
-    assert!(err.to_string().contains("--claude-write-approved"), "{err}");
+    assert_seat_auth_refusal(&err.to_string());
+}
+
+/// The fake seat's tempdir holds no credentials (and on macOS the Keychain
+/// has no item for a fresh tempdir digest), so the live path must refuse at
+/// the token read with the `SeatAuthError` message.
+fn assert_seat_auth_refusal(message: &str) {
+    assert!(message.contains("Claude Messages seat auth:"), "{message}");
+    assert!(message.contains("credentials file missing"), "{message}");
 }
 
 #[tokio::test]
@@ -124,8 +132,8 @@ async fn fixture_queue_serves_one_body_per_call_then_refuses() {
     let err = model
         .completion(ping_request())
         .await
-        .expect_err("queue drained → live gate");
-    assert!(err.to_string().contains("--claude-write-approved"), "{err}");
+        .expect_err("queue drained → live token read");
+    assert_seat_auth_refusal(&err.to_string());
 }
 
 #[test]
