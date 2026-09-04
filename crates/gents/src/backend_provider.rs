@@ -49,6 +49,15 @@ pub enum BackendProviderKind {
         alias = "grok_oauth"
     )]
     XaiGrokOAuth,
+    /// Claude subscription seat over Messages HTTP. Seat truth lives in the
+    /// process `--claude-config-dir`; the `claude` binary is a login-time
+    /// dependency only. `is_agent_scoped_oauth()` stays false.
+    #[serde(
+        rename = "ClaudeCliSubscription",
+        alias = "claude-cli-subscription",
+        alias = "claude_cli_subscription"
+    )]
+    ClaudeCliSubscription,
 }
 
 impl BackendProviderKind {
@@ -73,6 +82,9 @@ impl BackendProviderKind {
             | Some("xai-grok-oauth")
             | Some("xai_oauth")
             | Some("grok_oauth") => Ok(Self::XaiGrokOAuth),
+            Some("ClaudeCliSubscription")
+            | Some("claude-cli-subscription")
+            | Some("claude_cli_subscription") => Ok(Self::ClaudeCliSubscription),
             Some(other) => anyhow::bail!("unknown backend provider kind {other}"),
         }
     }
@@ -83,6 +95,7 @@ impl BackendProviderKind {
             Self::OpenRouter => "OpenRouter",
             Self::ChatGptCodex => "ChatGptCodex",
             Self::XaiGrokOAuth => "XaiGrokOAuth",
+            Self::ClaudeCliSubscription => "ClaudeCliSubscription",
         }
     }
 
@@ -90,6 +103,14 @@ impl BackendProviderKind {
     /// rather than a fleet-global API key. These must not be fleet-probed.
     pub fn is_agent_scoped_oauth(self) -> bool {
         matches!(self, Self::ChatGptCodex | Self::XaiGrokOAuth)
+    }
+
+    /// Backends that must not be fleet HTTP-probed.
+    ///
+    /// Includes agent-scoped OAuth providers and Claude CLI subscription seats
+    /// (process-local `--claude-config-dir`, no HTTP `/models` endpoint).
+    pub fn skips_fleet_http_probe(self) -> bool {
+        self.is_agent_scoped_oauth() || matches!(self, Self::ClaudeCliSubscription)
     }
 }
 
@@ -105,6 +126,7 @@ fn provider_display_name(kind: BackendProviderKind) -> &'static str {
         BackendProviderKind::OpenRouter => "OpenRouter",
         BackendProviderKind::ChatGptCodex => "ChatGPT Codex",
         BackendProviderKind::XaiGrokOAuth => "Grok / xAI OAuth",
+        BackendProviderKind::ClaudeCliSubscription => "Claude CLI subscription",
     }
 }
 
@@ -171,6 +193,11 @@ pub async fn discover_models(
     let endpoint = match kind {
         BackendProviderKind::ChatGptCodex => crate::chatgpt_codex::normalize_endpoint(endpoint),
         BackendProviderKind::XaiGrokOAuth => crate::xai_grok_oauth::normalize_endpoint(endpoint),
+        BackendProviderKind::ClaudeCliSubscription => {
+            anyhow::bail!(
+                "ClaudeCliSubscription does not support HTTP model discovery; models are configured on the InferenceBackend document and the seat lives in --claude-config-dir"
+            );
+        }
         _ => endpoint.trim_end_matches('/').to_string(),
     };
     let discovery_path = if kind == BackendProviderKind::XaiGrokOAuth {
@@ -326,6 +353,27 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn claude_max_cli_spellings_are_not_accepted() {
+        for spelling in ["claude-max-cli", "claude_max_cli"] {
+            assert!(
+                BackendProviderKind::parse_optional(Some(spelling)).is_err(),
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            BackendProviderKind::parse_optional(Some("claude_cli_subscription")).unwrap(),
+            BackendProviderKind::ClaudeCliSubscription
+        );
+        let parsed: BackendProviderKind = serde_json::from_str("\"claude-max-cli\"")
+            .unwrap_or(BackendProviderKind::OpenAiCompatible);
+        assert_ne!(
+            parsed,
+            BackendProviderKind::ClaudeCliSubscription,
+            "serde alias must be gone"
+        );
+    }
 
     #[tokio::test]
     async fn discover_models_reads_openai_models_and_sends_api_key() {

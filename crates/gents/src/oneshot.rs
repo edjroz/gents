@@ -219,6 +219,21 @@ pub async fn run_openai_oneshot_with_tools(
                 .await
             }
         }
+        BackendProviderKind::ClaudeCliSubscription => {
+            let client = crate::claude_subscription::ClaudeSubscriptionClient::new();
+            run_oneshot_with_completion_client(
+                node,
+                behavior,
+                prompt,
+                prompt_builder,
+                preamble,
+                tools,
+                background_tool_registry,
+                lsp_pool.clone(),
+                client,
+            )
+            .await
+        }
     }
 }
 

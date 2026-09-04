@@ -231,7 +231,35 @@ pub async fn probe_backends_cycle(
     let mut probed_ids = HashSet::new();
 
     for backend in backends {
-        if backend.provider_kind.is_agent_scoped_oauth() {
+        if backend.provider_kind
+            == crate::backend_provider::BackendProviderKind::ClaudeCliSubscription
+        {
+            probed_ids.insert(backend.backend_id.clone());
+            let (event, error_text) = match crate::claude_subscription::probe_process_seat_health()
+            {
+                Ok(detail) => {
+                    tracing::debug!(
+                        backend_id = %backend.backend_id,
+                        detail = %detail,
+                        "claude seat probe ok"
+                    );
+                    (ProbeEvent::ProbeSuccess, None)
+                }
+                Err(reason) => (ProbeEvent::ProbeFail, Some(reason)),
+            };
+            record_probe_event(
+                backend,
+                event,
+                error_text,
+                now,
+                health_map,
+                options,
+                &mut outcome,
+            )
+            .await;
+            continue;
+        }
+        if backend.provider_kind.skips_fleet_http_probe() {
             continue;
         }
         probed_ids.insert(backend.backend_id.clone());
@@ -255,51 +283,72 @@ pub async fn probe_backends_cycle(
             Err(_) => (ProbeEvent::ProbeFail, Some("probe timed out".to_string())),
         };
 
-        let previous = health_map.get_model(&backend.backend_id).await;
-        let next = step_backend(previous, event, options.failure_threshold_k);
-        let veto_flipped = previous.0.blocks_routing() != next.0.blocks_routing();
-
-        if veto_flipped {
-            tracing::warn!(
-                backend_id = %backend.backend_id,
-                endpoint = %backend.endpoint,
-                previous_state = %previous.0.as_str(),
-                next_state = %next.0.as_str(),
-                failure_count = next.1,
-                error = error_text.as_deref().unwrap_or(""),
-                "backend probe: measured health crossed the routing threshold"
-            );
-            outcome.flipped.push(backend.backend_id.clone());
-        } else if event == ProbeEvent::ProbeFail {
-            tracing::debug!(
-                backend_id = %backend.backend_id,
-                endpoint = %backend.endpoint,
-                state = %next.0.as_str(),
-                failure_count = next.1,
-                error = error_text.as_deref().unwrap_or(""),
-                "backend probe failed"
-            );
-        }
-
-        if event == ProbeEvent::ProbeSuccess && backend.probe_status == UNKNOWN_PROBE_STATUS {
-            outcome.promotable.push(backend.backend_id.clone());
-        }
-
-        health_map
-            .set_entry(
-                backend.backend_id.clone(),
-                BackendHealthEntry {
-                    state: next.0,
-                    failure_count: next.1,
-                    last_probe_at: now,
-                    last_error: error_text,
-                },
-            )
-            .await;
+        record_probe_event(
+            backend,
+            event,
+            error_text,
+            now,
+            health_map,
+            options,
+            &mut outcome,
+        )
+        .await;
     }
 
     health_map.retain_backends(&probed_ids).await;
     outcome
+}
+
+async fn record_probe_event(
+    backend: &InferenceBackend,
+    event: ProbeEvent,
+    error_text: Option<String>,
+    now: DateTime<Utc>,
+    health_map: &BackendHealthMap,
+    options: &BackendProberOptions,
+    outcome: &mut ProbeCycleOutcome,
+) {
+    let previous = health_map.get_model(&backend.backend_id).await;
+    let next = step_backend(previous, event, options.failure_threshold_k);
+    let veto_flipped = previous.0.blocks_routing() != next.0.blocks_routing();
+
+    if veto_flipped {
+        tracing::warn!(
+            backend_id = %backend.backend_id,
+            endpoint = %backend.endpoint,
+            previous_state = %previous.0.as_str(),
+            next_state = %next.0.as_str(),
+            failure_count = next.1,
+            error = error_text.as_deref().unwrap_or(""),
+            "backend probe: measured health crossed the routing threshold"
+        );
+        outcome.flipped.push(backend.backend_id.clone());
+    } else if event == ProbeEvent::ProbeFail {
+        tracing::debug!(
+            backend_id = %backend.backend_id,
+            endpoint = %backend.endpoint,
+            state = %next.0.as_str(),
+            failure_count = next.1,
+            error = error_text.as_deref().unwrap_or(""),
+            "backend probe failed"
+        );
+    }
+
+    if event == ProbeEvent::ProbeSuccess && backend.probe_status == UNKNOWN_PROBE_STATUS {
+        outcome.promotable.push(backend.backend_id.clone());
+    }
+
+    health_map
+        .set_entry(
+            backend.backend_id.clone(),
+            BackendHealthEntry {
+                state: next.0,
+                failure_count: next.1,
+                last_probe_at: now,
+                last_error: error_text,
+            },
+        )
+        .await;
 }
 
 pub async fn run_backend_probe_cycle(
@@ -627,6 +676,154 @@ mod tests {
         assert!(outcome.flipped.is_empty());
         assert!(health_map.get("codex").await.is_none(), "no measured entry");
         assert!(!health_map.measured_blocks_routing("codex").await);
+    }
+
+    fn claude_backend() -> InferenceBackend {
+        let mut claude = backend(
+            "claude",
+            crate::claude_subscription::DEFAULT_BACKEND_ENDPOINT.to_string(),
+            "healthy",
+        );
+        claude.provider_kind = crate::backend_provider::BackendProviderKind::ClaudeCliSubscription;
+        claude
+    }
+
+    fn install_claude_seat_with_credentials(expires_at_millis: Option<i64>) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("seat dir");
+        let config_dir = temp.path().join("claude-config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        if let Some(expires) = expires_at_millis {
+            std::fs::write(
+                config_dir.join(".credentials.json"),
+                format!(
+                    r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-TEST","expiresAt":{expires}}}}}"#
+                ),
+            )
+            .unwrap();
+        }
+        crate::claude_subscription::install_process_seat(Some(
+            crate::claude_subscription::ClaudeSeatConfig::new(config_dir, false),
+        ));
+        temp
+    }
+
+    #[tokio::test]
+    async fn cycle_does_not_http_probe_claude_cli_subscription_backends() {
+        let _guard = crate::claude_subscription::lock_process_seat_for_test();
+        crate::claude_subscription::install_process_seat(None);
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        // Dead HTTP endpoint would fail if discover_models ran. Seat is unset
+        // so the process-local probe fails without touching HTTP.
+        let mut claude = claude_backend();
+        claude.endpoint = "http://127.0.0.1:1/v1".to_string();
+        let outcome =
+            probe_backends_cycle(&client, &[claude], Utc::now(), &health_map, &options).await;
+        assert!(outcome.promotable.is_empty());
+        let snap = health_map.get("claude").await.expect("measured entry");
+        assert_eq!(snap.state, BackendHealthState::Degraded);
+        assert_eq!(snap.failure_count, 1);
+        assert!(
+            snap.last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("process seat not installed")),
+            "{:?}",
+            snap.last_error
+        );
+        assert!(!health_map.measured_blocks_routing("claude").await);
+    }
+
+    #[tokio::test]
+    async fn cycle_demotes_claude_after_k_expired_probes_with_login_hint() {
+        let _guard = crate::claude_subscription::lock_process_seat_for_test();
+        let _seat = install_claude_seat_with_credentials(Some(1_000));
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let backends = vec![claude_backend()];
+        for cycle in 1..=3u32 {
+            let outcome =
+                probe_backends_cycle(&client, &backends, Utc::now(), &health_map, &options).await;
+            assert!(outcome.promotable.is_empty());
+            let snap = health_map.get("claude").await.expect("entry");
+            assert_eq!(snap.failure_count, cycle);
+            let err = snap.last_error.clone().unwrap_or_default();
+            assert!(
+                err.contains("expired at") && err.contains("gents claude-login --config-dir"),
+                "{err}"
+            );
+            assert!(
+                !err.contains("sk-ant"),
+                "probe error must not carry the token"
+            );
+            if cycle < 3 {
+                assert_eq!(snap.state, BackendHealthState::Degraded);
+                assert!(outcome.flipped.is_empty());
+            } else {
+                assert_eq!(snap.state, BackendHealthState::Unhealthy);
+                assert_eq!(outcome.flipped, vec!["claude".to_string()]);
+                assert!(health_map.measured_blocks_routing("claude").await);
+            }
+        }
+        crate::claude_subscription::install_process_seat(None);
+    }
+
+    #[tokio::test]
+    async fn cycle_marks_claude_healthy_and_promotes_unknown_document() {
+        let _guard = crate::claude_subscription::lock_process_seat_for_test();
+        let _seat = install_claude_seat_with_credentials(Some(4_102_444_800_000));
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        let mut claude = claude_backend();
+        claude.probe_status = "unknown".to_string();
+        let outcome =
+            probe_backends_cycle(&client, &[claude], Utc::now(), &health_map, &options).await;
+        assert_eq!(
+            outcome.promotable,
+            vec!["claude".to_string()],
+            "C9: unknown Claude document promotes on first pass"
+        );
+        let snap = health_map.get("claude").await.expect("entry");
+        assert_eq!(snap.state, BackendHealthState::Healthy);
+        assert_eq!(snap.failure_count, 0);
+        assert!(snap.last_error.is_none());
+        crate::claude_subscription::install_process_seat(None);
+    }
+
+    #[tokio::test]
+    async fn cycle_fails_claude_when_credentials_are_missing() {
+        let _guard = crate::claude_subscription::lock_process_seat_for_test();
+        let _seat = install_claude_seat_with_credentials(None);
+        let (options, client, health_map) = (
+            probe_options(),
+            reqwest::Client::new(),
+            BackendHealthMap::new(),
+        );
+        probe_backends_cycle(
+            &client,
+            &[claude_backend()],
+            Utc::now(),
+            &health_map,
+            &options,
+        )
+        .await;
+        let snap = health_map.get("claude").await.expect("entry");
+        assert_eq!(snap.state, BackendHealthState::Degraded);
+        let err = snap.last_error.clone().unwrap_or_default();
+        assert!(
+            err.contains("credentials file missing")
+                && err.contains("gents claude-login --config-dir"),
+            "{err}"
+        );
+        crate::claude_subscription::install_process_seat(None);
     }
 
     #[tokio::test]
