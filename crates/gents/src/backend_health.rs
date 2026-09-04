@@ -702,7 +702,7 @@ mod tests {
             .unwrap();
         }
         crate::claude_subscription::install_process_seat(Some(
-            crate::claude_subscription::ClaudeSeatConfig::new(config_dir, false),
+            crate::claude_subscription::ClaudeSeatConfig::new(config_dir),
         ));
         temp
     }
