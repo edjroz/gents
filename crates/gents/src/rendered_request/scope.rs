@@ -361,23 +361,6 @@ pub(crate) async fn capture_body(
 ) -> std::result::Result<(), (CaptureFailureStage, anyhow::Error)> {
     let request_json: serde_json::Value = serde_json::from_slice(body)
         .map_err(|error| (CaptureFailureStage::DecodeBody, anyhow::Error::from(error)))?;
-    capture_request_json(
-        scope,
-        pending,
-        source,
-        provider_endpoint,
-        request_json,
-    )
-    .await
-}
-
-async fn capture_request_json(
-    scope: &RequestCaptureScope,
-    pending: PendingCapture,
-    source: super::RenderedRequestSource,
-    provider_endpoint: Option<String>,
-    request_json: serde_json::Value,
-) -> std::result::Result<(), (CaptureFailureStage, anyhow::Error)> {
     let components = super::RenderedRequestComponents::from_provider_body(request_json, source);
     let rendered = super::build_rendered_completion_request(
         scope.context(),

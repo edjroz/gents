@@ -122,6 +122,7 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
         .map(ToOwned::to_owned);
     let mut ok = enabled && probe_status == "healthy";
     let mut error = None::<String>;
+    let mut note = None::<&'static str>;
     let mut discovered_models = Vec::<String>::new();
 
     let api_key = match (raw_api_key.as_ref(), api_key_env_var.as_deref()) {
@@ -172,7 +173,11 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
                 });
             }
         };
-        if !provider_kind.is_agent_scoped_oauth() {
+        // Mirrors the runtime prober (`backend_health`): agent-scoped OAuth and
+        // the Claude subscription seat have no HTTP `/models` to discover.
+        if matches!(provider_kind, BackendProviderKind::ClaudeCliSubscription) {
+            note = Some(CLAUDE_SEAT_DISCOVERY_NOTE);
+        } else if !provider_kind.skips_fleet_http_probe() {
             match discover_backend_models(
                 &client,
                 provider_kind,
@@ -221,6 +226,36 @@ async fn diagnose_backend(backend: &Value, required_models: Vec<String>) -> Valu
         "api_key_env_var": api_key_env_var,
         "required_models": required_models,
         "discovered_models": discovered_models,
+        "note": note,
         "error": error,
     })
+}
+
+const CLAUDE_SEAT_DISCOVERY_NOTE: &str =
+    "claude subscription seat: discovery not applicable; health is the seat-token probe";
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn claude_subscription_backend_skips_discovery_and_stays_ok() {
+        let backend = json!({
+            "backend_id": "claude-max",
+            "provider_kind": "claude_cli_subscription",
+            "endpoint": "claude-cli://subscription",
+            "enabled": true,
+            "probe_status": "healthy",
+        });
+        let report = diagnose_backend(&backend, vec!["claude-sonnet-5".to_string()]).await;
+        assert_eq!(report["ok"], Value::Bool(true), "{report}");
+        assert_eq!(report["error"], Value::Null, "{report}");
+        assert_eq!(
+            report["note"],
+            Value::String(CLAUDE_SEAT_DISCOVERY_NOTE.to_string())
+        );
+        assert_eq!(report["discovered_models"], json!([]));
+    }
 }

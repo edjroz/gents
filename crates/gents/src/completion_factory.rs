@@ -334,7 +334,7 @@ fn reasoning_profile_params(
         })),
         // Grok: do not force reasoning.effort — several grok models 400 on it.
         (BackendProviderKind::XaiGrokOAuth, _) => None,
-        // Claude CLI subscription is text-only in A2b; no reasoning wire params.
+        // Claude Messages sends no sampling or reasoning keys (`claude_messages`).
         (BackendProviderKind::ClaudeCliSubscription, _) => None,
     }
 }

@@ -12,8 +12,7 @@ pub const DEFAULT_MODEL_ID: &str = "claude-sonnet-5";
 
 /// Environment variable names that must not reach the Claude CLI child.
 ///
-/// These flip the seat onto API-key / cloud-provider billing paths. Keep in
-/// sync with the spike completer (`.scratch/claude-spike/bin/claude-completer.sh`).
+/// These flip the seat onto API-key / cloud-provider billing paths.
 pub const STRIPPED_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",

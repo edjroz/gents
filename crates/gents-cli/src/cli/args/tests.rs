@@ -820,7 +820,7 @@ fn claude_login_rejects_removed_console_and_sso_flags() {
 
 #[test]
 fn every_deprecated_path_warns() {
-    use crate::cli::deprecations::{DEPRECATED, deprecation_warning};
+    use crate::cli::deprecations::{deprecation_warning, DEPRECATED};
 
     for (path, replacement) in DEPRECATED {
         let mut argv = vec!["gents".to_string()];

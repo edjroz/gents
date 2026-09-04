@@ -87,7 +87,7 @@ pub(crate) enum Command {
     #[command(
         name = "claude-login",
         about = "Sign in to the Claude subscription seat via the Claude CLI (credentials stay in --config-dir; no oat in DefraDB)",
-        after_help = "Path A auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires --claude-write-approved after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
+        after_help = "Seat auth: credentials live in CLAUDE_CONFIG_DIR / --config-dir only.\nThis command never writes OAuthCredential documents.\nLive login requires --claude-write-approved after an explicit numbered write approval.\nUse --dry-run to print the planned argv without contacting Anthropic."
     )]
     ClaudeLogin(ClaudeLoginArgs),
     #[command(name = "__native-fs-runner", hide = true)]

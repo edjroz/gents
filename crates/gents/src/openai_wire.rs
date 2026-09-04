@@ -62,7 +62,7 @@ impl OpenAiWireApi {
             BackendProviderKind::XaiGrokOAuth => configured.unwrap_or(Self::Responses),
             // Claude is not an OpenAI wire provider; ChatCompletions is only a
             // placeholder so SamplingConfig / loop_config keep compiling. The
-            // in-process completer ignores openai_wire_api.
+            // Messages HTTP wire (`claude_messages`) ignores openai_wire_api.
             BackendProviderKind::ClaudeCliSubscription => {
                 if let Some(value) = configured {
                     tracing::warn!(

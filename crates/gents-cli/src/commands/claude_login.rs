@@ -1,4 +1,4 @@
-//! Thin wrapper around official Claude CLI login for Path A.
+//! Thin wrapper around official Claude CLI login for the subscription seat.
 //!
 //! Seat credentials stay in `--config-dir` / `CLAUDE_CONFIG_DIR`. This command
 //! never upserts `OAuthCredential` into DefraDB.
@@ -108,10 +108,7 @@ fn run_claude_login(plan: &ClaudeLoginPlan) -> Result<()> {
         .status()
         .with_context(|| format!("spawn {} auth login", plan.claude_bin.display()))?;
     if !status.success() {
-        bail!(
-            "claude auth login exit {}",
-            status.code().unwrap_or(-1)
-        );
+        bail!("claude auth login exit {}", status.code().unwrap_or(-1));
     }
     Ok(())
 }
@@ -176,7 +173,10 @@ mod tests {
         let mut args = base_args();
         args.email = Some("user@example.com".into());
         let plan = plan_claude_login(&args).expect("plan");
-        assert!(plan.argv.windows(2).any(|w| w == ["--email", "user@example.com"]));
+        assert!(plan
+            .argv
+            .windows(2)
+            .any(|w| w == ["--email", "user@example.com"]));
     }
 
     #[test]

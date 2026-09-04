@@ -3,18 +3,17 @@ import Proofs.Transcript.State
 /-!
 # Claude content-block map (Track B / B2)
 
-Claude CLI stream-json (C1) and native Messages (C2) share `tool_use` /
-`tool_result` content blocks. This file maps those blocks onto existing
-`ToolCallId`s / `MessageKind` rows. It does not model CLI argv, live spawn,
-or oat.
+Anthropic Messages HTTP is the only Claude wire. Its `tool_use` /
+`tool_result` content blocks are mapped here onto existing `ToolCallId`s /
+`MessageKind` rows. This file does not model the HTTP transport, the seat
+token read, or oat.
 
 Unmapped names (including Claude-native `Bash`) and `tool_use` on an empty
 gents surface fail closed: the block does not become a call. No aliases.
-Text-only turns (no `tool_use`) succeed even on an empty surface — that is
-the A2b fence.
+Text-only turns (no `tool_use`) succeed even on an empty surface.
 
 Id identity: a successful map returns the same `ToolCallId` it was given.
-The Completer's `toolu_*` → `Nat` injection is a separate plumbing obligation
+The runtime's `toolu_*` → `Nat` injection is a separate plumbing obligation
 (`UniqueCallIds`); this map does not remap.
 -/
 

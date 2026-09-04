@@ -61,9 +61,8 @@ const COMPLETION_REQUEST_PATHS: &[(&str, RenderedRequestSource)] = &[
 /// The two can disagree — a backend document can be edited between reconcile
 /// and send.
 ///
-/// `ClaudeCliSubscription` is stamped by the in-process Completer for process-CLI
-/// captures, and by the capturing HTTP transport for C2 Messages posts to
-/// `/v1/messages`.
+/// `ClaudeCliSubscription` is stamped by the capturing HTTP transport for
+/// Anthropic Messages posts to `/v1/messages` — the only Claude wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderedRequestSource {
     #[serde(rename = "openai_responses")]
@@ -712,7 +711,8 @@ pub struct ProvenanceManifest {
 }
 
 impl ProvenanceManifest {
-    const CAPTURED_ONLY_REASON: &'static str = "this provenance manifest pins no config or transcript versions, so a \
+    const CAPTURED_ONLY_REASON: &'static str =
+        "this provenance manifest pins no config or transcript versions, so a \
          reconstruction cannot be verified against this capture";
 
     pub fn captured_only(

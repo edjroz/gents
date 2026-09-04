@@ -5,11 +5,9 @@
 //!
 //! * `RenderedCompletionRequest` is the *capture DTO*. It carries the exact
 //!   provider request body plus the identity, routing, and provenance a
-//!   `RenderedRequest` row needs. It is built at a capture seam — HTTP
-//!   providers at the last `HttpClientExt` before the network client,
-//!   process-CLI Completers immediately before spawn — and handed to the
-//!   capture sink, which must succeed before the body is forwarded or the
-//!   CLI is spawned.
+//!   `RenderedRequest` row needs. It is built at the **transport seam** — the
+//!   last `HttpClientExt` before the network client — and handed to the capture
+//!   sink, which must succeed before the body is forwarded.
 //! * `AssemblyTrace` is the reconstruction manifest. It records the effective
 //!   native messages plus the ordered `ProviderContextReduction` keys that
 //!   produced a sticky request-local projection. `RenderedRequest` remains the

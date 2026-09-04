@@ -27,16 +27,16 @@ use gents::llm::message::{
 use std::collections::HashSet;
 
 use gents::claude_messages::{
-    CLAUDE_CODE_IDENTITY, build_messages_body_native, parse_messages_sse,
+    build_messages_body_native, parse_messages_sse, CLAUDE_CODE_IDENTITY,
 };
 use gents::claude_subscription::ClaudeStreamResponse;
 use rig::completion::CompletionError;
 use rig::streaming::RawStreamingChoice;
 
 use crate::lean_vocab_test::{
-    LeanPromptAssemblyItem, LeanPromptAssemblyRow, lean_prompt_assembly_claude_body_cases,
-    lean_prompt_assembly_claude_map_cases, lean_prompt_assembly_claude_stream_cases,
-    lean_prompt_assembly_sanitize_cases,
+    lean_prompt_assembly_claude_body_cases, lean_prompt_assembly_claude_map_cases,
+    lean_prompt_assembly_claude_stream_cases, lean_prompt_assembly_sanitize_cases,
+    LeanPromptAssemblyItem, LeanPromptAssemblyRow,
 };
 
 /// Stable identities for the abstract ids the model uses. The model abstracts
@@ -385,7 +385,10 @@ fn assert_fail_closed(
         )),
         other => panic!("case {case_name} unknown outcome {other}"),
     };
-    assert!(ok, "case {case_name}: outcome {outcome} but error was: {err}");
+    assert!(
+        ok,
+        "case {case_name}: outcome {outcome} but error was: {err}"
+    );
 }
 
 fn sse_event(payload: serde_json::Value) -> String {

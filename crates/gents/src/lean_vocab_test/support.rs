@@ -684,8 +684,8 @@ pub(crate) fn lean_persistence_failure_policy_cases() -> &'static [LeanPersisten
     &lean_contract_snapshot().persistence_failure_policy_cases
 }
 
-pub(crate) fn lean_storage_observation_runtime_cases()
--> &'static [LeanStorageObservationRuntimeCase] {
+pub(crate) fn lean_storage_observation_runtime_cases(
+) -> &'static [LeanStorageObservationRuntimeCase] {
     &lean_contract_snapshot().storage_observation_runtime_cases
 }
 
@@ -703,18 +703,18 @@ pub(crate) fn lean_managed_exec_tool_boundary_cases() -> &'static [LeanManagedEx
     &lean_contract_snapshot().managed_exec_tool_boundary_cases
 }
 
-pub(crate) fn lean_pairing_reconcile_shutdown_boundary_cases()
--> &'static [LeanPairingReconcileShutdownBoundaryCase] {
+pub(crate) fn lean_pairing_reconcile_shutdown_boundary_cases(
+) -> &'static [LeanPairingReconcileShutdownBoundaryCase] {
     &lean_contract_snapshot().pairing_reconcile_shutdown_boundary_cases
 }
 
-pub(crate) fn lean_pairing_reconcile_sweep_retry_boundary_cases()
--> &'static [LeanPairingReconcileSweepRetryBoundaryCase] {
+pub(crate) fn lean_pairing_reconcile_sweep_retry_boundary_cases(
+) -> &'static [LeanPairingReconcileSweepRetryBoundaryCase] {
     &lean_contract_snapshot().pairing_reconcile_sweep_retry_boundary_cases
 }
 
-pub(crate) fn lean_pairing_reconcile_sweep_scheduling_cases()
--> &'static [LeanPairingReconcileSweepSchedulingCase] {
+pub(crate) fn lean_pairing_reconcile_sweep_scheduling_cases(
+) -> &'static [LeanPairingReconcileSweepSchedulingCase] {
     &lean_contract_snapshot().pairing_reconcile_sweep_scheduling_cases
 }
 
@@ -817,13 +817,13 @@ pub(crate) fn lean_codex_shim_subagent_status_cases() -> &'static [LeanCodexShim
     &lean_contract_snapshot().codex_shim_subagent_status_cases
 }
 
-pub(crate) fn lean_codex_shim_subagent_visibility_cases()
--> &'static [LeanCodexShimSubagentVisibilityCase] {
+pub(crate) fn lean_codex_shim_subagent_visibility_cases(
+) -> &'static [LeanCodexShimSubagentVisibilityCase] {
     &lean_contract_snapshot().codex_shim_subagent_visibility_cases
 }
 
-pub(crate) fn lean_codex_shim_subagent_metadata_cases()
--> &'static [LeanCodexShimSubagentMetadataCase] {
+pub(crate) fn lean_codex_shim_subagent_metadata_cases(
+) -> &'static [LeanCodexShimSubagentMetadataCase] {
     &lean_contract_snapshot().codex_shim_subagent_metadata_cases
 }
 
@@ -832,13 +832,13 @@ pub(crate) fn lean_codex_shim_subagent_listing_cases() -> &'static [LeanCodexShi
     &lean_contract_snapshot().codex_shim_subagent_listing_cases
 }
 
-pub(crate) fn lean_codex_shim_subagent_thread_shape_cases()
--> &'static [LeanCodexShimSubagentThreadShapeCase] {
+pub(crate) fn lean_codex_shim_subagent_thread_shape_cases(
+) -> &'static [LeanCodexShimSubagentThreadShapeCase] {
     &lean_contract_snapshot().codex_shim_subagent_thread_shape_cases
 }
 
-pub(crate) fn lean_codex_shim_reasoning_projection_cases()
--> &'static [LeanCodexShimReasoningProjectionCase] {
+pub(crate) fn lean_codex_shim_reasoning_projection_cases(
+) -> &'static [LeanCodexShimReasoningProjectionCase] {
     &lean_contract_snapshot().codex_shim_reasoning_projection_cases
 }
 
@@ -846,8 +846,8 @@ pub(crate) fn lean_codex_shim_thread_status_cases() -> &'static [LeanCodexShimTh
     &lean_contract_snapshot().codex_shim_thread_status_cases
 }
 
-pub(crate) fn lean_codex_shim_behavior_selection_cases()
--> &'static [LeanCodexShimBehaviorSelectionCase] {
+pub(crate) fn lean_codex_shim_behavior_selection_cases(
+) -> &'static [LeanCodexShimBehaviorSelectionCase] {
     &lean_contract_snapshot().codex_shim_behavior_selection_cases
 }
 
@@ -859,8 +859,8 @@ pub(crate) fn lean_codex_shim_context_usage_cases() -> &'static [LeanCodexShimCo
     &lean_contract_snapshot().codex_shim_context_usage_cases
 }
 
-pub(crate) fn lean_codex_shim_compaction_projection_cases()
--> &'static [LeanCodexShimCompactionProjectionCase] {
+pub(crate) fn lean_codex_shim_compaction_projection_cases(
+) -> &'static [LeanCodexShimCompactionProjectionCase] {
     &lean_contract_snapshot().codex_shim_compaction_projection_cases
 }
 
@@ -1024,8 +1024,8 @@ pub(crate) fn lean_prompt_assembly_claude_body_cases() -> &'static [LeanPromptAs
     &lean_contract_snapshot().prompt_assembly_claude_body_cases
 }
 
-pub(crate) fn lean_prompt_assembly_claude_stream_cases()
--> &'static [LeanPromptAssemblyClaudeStreamCase] {
+pub(crate) fn lean_prompt_assembly_claude_stream_cases(
+) -> &'static [LeanPromptAssemblyClaudeStreamCase] {
     &lean_contract_snapshot().prompt_assembly_claude_stream_cases
 }
 
@@ -1069,8 +1069,8 @@ pub(crate) fn lean_event_delivery_source_instances() -> &'static [LeanEventDeliv
     &lean_contract_snapshot().event_delivery_source_instances
 }
 
-pub(crate) fn lean_event_delivery_convergence_traces()
--> &'static [LeanEventDeliveryConvergenceTrace] {
+pub(crate) fn lean_event_delivery_convergence_traces(
+) -> &'static [LeanEventDeliveryConvergenceTrace] {
     &lean_contract_snapshot().event_delivery_convergence_traces
 }
 

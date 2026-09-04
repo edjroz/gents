@@ -7,15 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use futures::StreamExt;
-use rig::OneOrMany;
 use rig::client::CompletionClient;
 use rig::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse, GetTokenUsage, Usage,
 };
 use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse};
+use rig::OneOrMany;
 use serde::{Deserialize, Serialize};
 
-use crate::claude_seat_auth::{SeatAuthError, SeatTokenSource, read_seat_access_token};
+use crate::claude_seat_auth::{read_seat_access_token, SeatAuthError, SeatTokenSource};
 
 /// Placeholder endpoint for ClaudeCliSubscription InferenceBackend rows.
 ///

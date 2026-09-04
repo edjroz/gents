@@ -5,7 +5,7 @@ use futures::StreamExt;
 use rig::completion::{CompletionRequest, ToolDefinition};
 use rig::http_client;
 use rig::streaming::RawStreamingChoice;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::*;
 use crate::llm::message::{
@@ -127,17 +127,9 @@ fn messages_body_routes_system_rows_after_identity_and_preamble() {
 fn messages_body_marks_two_cache_breakpoints() {
     let body = build_messages_body("claude-sonnet-5", &request_with_system_rows());
     let system = body["system"].as_array().expect("system");
-    assert_eq!(
-        system.last().unwrap()["cache_control"]["type"],
-        "ephemeral"
-    );
+    assert_eq!(system.last().unwrap()["cache_control"]["type"], "ephemeral");
     assert!(system[0].get("cache_control").is_none());
-    let last_message = body["messages"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .clone();
+    let last_message = body["messages"].as_array().unwrap().last().unwrap().clone();
     let last_block = last_message["content"]
         .as_array()
         .unwrap()
@@ -181,8 +173,14 @@ fn messages_body_omits_sampling_even_when_request_sets_it() {
 /// Keys the Messages body may carry. Sampling (`temperature`, `top_p`,
 /// `top_k`) and `additional_params` stay off the wire: live `claude-sonnet-5`
 /// returns 400 "`temperature` is deprecated for this model".
-const MESSAGES_BODY_ALLOWED_KEYS: &[&str] =
-    &["model", "max_tokens", "stream", "messages", "tools", "system"];
+const MESSAGES_BODY_ALLOWED_KEYS: &[&str] = &[
+    "model",
+    "max_tokens",
+    "stream",
+    "messages",
+    "tools",
+    "system",
+];
 
 fn assert_messages_body_has_no_sampling(body: &Value) {
     let keys: Vec<&String> = body.as_object().expect("object body").keys().collect();
@@ -283,7 +281,9 @@ fn sse_tool_use_block(id: &str, name: &str, start_input: &str, deltas: &[&str]) 
             "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{escaped}}}}}\n\n"
         ));
     }
-    sse.push_str("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n");
+    sse.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
     sse
 }
 
@@ -352,9 +352,7 @@ fn sse_duplicate_tool_use_id_fails_closed() {
 #[test]
 fn sse_overlapping_tool_use_block_fails_closed() {
     let first = sse_tool_use_block("toolu_1", "echo", "{}", &[]);
-    let (start, _stop) = first
-        .split_once("event: content_block_stop")
-        .expect("stop");
+    let (start, _stop) = first.split_once("event: content_block_stop").expect("stop");
     let mut sse = start.to_string();
     sse.push_str(&sse_tool_use_block("toolu_2", "echo", "{}", &[]));
     let surface = HashSet::from(["echo".to_string()]);
@@ -366,15 +364,45 @@ fn sse_overlapping_tool_use_block_fails_closed() {
     );
 }
 
+/// A stream that ends with `message_stop` but never sent `content_block_stop`
+/// still yields the open tool call, and it precedes the single `FinalResponse`.
+#[test]
+fn sse_message_stop_flushes_pending_tool_before_final() {
+    let surface = HashSet::from(["echo".to_string()]);
+    let mut state = MessagesSseState::new(surface);
+    let mut events = Vec::new();
+    let block = sse_tool_use_block("toolu_1", "echo", "{}", &["{\"text\":\"hi\"}"]);
+    let without_stop = block
+        .split_once("event: content_block_stop")
+        .expect("block ends with content_block_stop")
+        .0
+        .to_string();
+    for line in without_stop.lines() {
+        events.extend(state.push_line(line).expect("push"));
+    }
+    assert!(events.is_empty(), "{events:?}");
+    for line in "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".lines() {
+        events.extend(state.push_line(line).expect("push"));
+    }
+    assert!(
+        matches!(
+            &events[..],
+            [RawStreamingChoice::ToolCall(call), RawStreamingChoice::FinalResponse(_)]
+                if call.arguments == json!({"text": "hi"})
+        ),
+        "{events:?}"
+    );
+    let trailing = state.finish().expect("finish");
+    assert!(trailing.is_empty(), "no second FinalResponse: {trailing:?}");
+}
+
 #[test]
 fn push_line_yields_text_before_the_body_ends() {
     let mut state = MessagesSseState::new(HashSet::new());
-    assert!(
-        state
-            .push_line("event: content_block_delta")
-            .unwrap()
-            .is_empty()
-    );
+    assert!(state
+        .push_line("event: content_block_delta")
+        .unwrap()
+        .is_empty());
     let events = state
         .push_line(
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}"#,

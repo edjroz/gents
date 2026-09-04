@@ -7,8 +7,11 @@
 //! `tool_use` blocks map onto the gents surface or fail closed. Lean model:
 //! `Proofs/PromptAssembly/ClaudeMap.lean` (system assembly, accumulation).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::fmt;
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
 use bytes::Bytes;
@@ -20,7 +23,7 @@ use rig::http_client::{
 };
 use rig::streaming::{RawStreamingChoice, RawStreamingToolCall};
 use rig::wasm_compat::WasmCompatSend;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use thiserror::Error;
 
 use crate::claude_seat_auth::read_seat_access_token;
@@ -58,6 +61,7 @@ impl From<MessagesParseError> for CompletionError {
     }
 }
 
+#[cfg(test)]
 fn messages_sse_fixture_queue() -> &'static Mutex<VecDeque<String>> {
     static QUEUE: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
@@ -65,12 +69,16 @@ fn messages_sse_fixture_queue() -> &'static Mutex<VecDeque<String>> {
 
 /// Test-only: SSE bodies served instead of the network, one per
 /// `stream_messages` call, in order. Cleared by `lock_process_seat_for_test`.
-pub fn install_messages_sse_fixtures(bodies: Vec<String>) {
+/// Compiled out of non-test builds so no linking crate can bypass the network
+/// or the write gate.
+#[cfg(test)]
+pub(crate) fn install_messages_sse_fixtures(bodies: Vec<String>) {
     *messages_sse_fixture_queue()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner()) = bodies.into_iter().collect();
 }
 
+#[cfg(test)]
 fn take_messages_sse_fixture() -> Option<String> {
     messages_sse_fixture_queue()
         .lock()
@@ -401,6 +409,11 @@ impl MessagesSseState {
                 }
             }
             "message_stop" => {
+                // A malformed stream may end without `content_block_stop`;
+                // the open block still precedes the final response.
+                if let Some(tool) = self.pending.take() {
+                    events.push(mapped_tool_call(tool, &self.surface, &mut self.seen_ids)?);
+                }
                 if !self.finished {
                     self.finished = true;
                     events.push(RawStreamingChoice::FinalResponse(ClaudeStreamResponse {
@@ -410,10 +423,7 @@ impl MessagesSseState {
             }
             "error" => {
                 let error = payload.get("error").cloned().unwrap_or(Value::Null);
-                let error_type = error
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("error");
+                let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
                 let message = error.get("message").and_then(Value::as_str).unwrap_or("");
                 let request_id = self.request_id.as_deref().unwrap_or("-");
                 return Err(CompletionError::ProviderError(format!(
@@ -481,11 +491,10 @@ fn mapped_tool_call(
         return Err(MessagesParseError::ToolUse { names: tool.name }.into());
     }
     let raw = tool.arguments_json();
-    let input: Value = serde_json::from_str(&raw).map_err(|error| {
-        MessagesParseError::MalformedToolUse {
+    let input: Value =
+        serde_json::from_str(&raw).map_err(|error| MessagesParseError::MalformedToolUse {
             message: format!("tool_use {} input is not JSON: {error}", tool.id),
-        }
-    })?;
+        })?;
     Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
         tool.id, tool.name, input,
     )))
@@ -573,7 +582,10 @@ pub async fn stream_messages(
     CompletionError,
 > {
     let seat: ClaudeSeatConfig = crate::claude_subscription::require_process_seat()?;
+    #[cfg(test)]
     let fixture = take_messages_sse_fixture();
+    #[cfg(not(test))]
+    let fixture: Option<String> = None;
     if fixture.is_none() && !seat.write_approved {
         return Err(CompletionError::ProviderError(
             "live Claude path refused: pass --claude-write-approved after an explicit numbered write approval"
@@ -596,12 +608,12 @@ pub async fn stream_messages(
         let token = read_seat_access_token(&seat.config_dir).map_err(|error| {
             CompletionError::ProviderError(format!("Claude Messages seat auth: {error}"))
         })?;
-        builder = builder.header(
-            "authorization",
+        let mut authorization =
             HeaderValue::from_str(&token.authorization_value()).map_err(|error| {
                 CompletionError::ProviderError(format!("Claude Messages auth header: {error}"))
-            })?,
-        );
+            })?;
+        authorization.set_sensitive(true);
+        builder = builder.header("authorization", authorization);
         tracing::info!(
             model = %model,
             config_dir = %seat.config_dir.display(),
@@ -703,8 +715,8 @@ impl HttpClientExt for SeatTransport {
         &self,
         req: Request<T>,
     ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>>
-    + WasmCompatSend
-    + 'static
+           + WasmCompatSend
+           + 'static
     where
         T: Into<Bytes> + WasmCompatSend,
         U: From<Bytes>,
@@ -728,8 +740,8 @@ impl HttpClientExt for SeatTransport {
         &self,
         req: Request<MultipartForm>,
     ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>>
-    + WasmCompatSend
-    + 'static
+           + WasmCompatSend
+           + 'static
     where
         U: From<Bytes>,
         U: WasmCompatSend + 'static,

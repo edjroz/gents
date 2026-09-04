@@ -45,10 +45,7 @@ async fn live_path_refuses_without_write_approval() {
     let _guard = lock_process_seat_for_test();
     let _seat = install_fake_seat();
     let model = ClaudeSubscriptionClient::new().completion_model("claude-sonnet-5");
-    let err = model
-        .completion(ping_request())
-        .await
-        .expect_err("refused");
+    let err = model.completion(ping_request()).await.expect_err("refused");
     assert!(err.to_string().contains("--claude-write-approved"), "{err}");
 }
 
@@ -100,10 +97,7 @@ async fn messages_http_fixture_streams_text_turn_on_empty_surface() {
         crate::claude_messages::sse_fixture_final_text("pong"),
     ]);
     let model = ClaudeSubscriptionClient::new().completion_model("claude-sonnet-5");
-    let response = model
-        .completion(ping_request())
-        .await
-        .expect("text turn");
+    let response = model.completion(ping_request()).await.expect("text turn");
     let text = response
         .choice
         .iter()

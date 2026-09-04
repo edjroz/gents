@@ -21,12 +21,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use defra_node::EmbeddedNode;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend_registry::{
-    InferenceBackend, UNKNOWN_PROBE_STATUS, list_enabled_backends,
-    set_backend_probe_status_with_last_probe,
+    list_enabled_backends, set_backend_probe_status_with_last_probe, InferenceBackend,
+    UNKNOWN_PROBE_STATUS,
 };
 
 #[derive(Clone, Debug)]
@@ -428,7 +428,7 @@ pub fn spawn_backend_prober(
 
 #[cfg(test)]
 mod tests {
-    use axum::{Json, Router, routing::get};
+    use axum::{routing::get, Json, Router};
     use tokio::sync::oneshot;
 
     use super::*;

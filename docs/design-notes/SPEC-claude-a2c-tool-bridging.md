@@ -73,11 +73,11 @@ A2b explicitly deferred this:
 ### What is plumbing (Rust after Lean/conformance, not a new machine)
 
 - Completer argv: stop forcing `--tools ""` on tool-capable turns; pass the **locked** protocol flags.
-- Parse stream-json `tool_use` / `tool_result` blocks instead of `CompleterParseError::ToolUse`.
+- Parse stream-json `tool_use` / `tool_result` blocks instead of `CompleterParseError::ToolUse`. [Superseded 2026-09-03 by the single Messages HTTP wire: `claude_messages::MessagesSseState` parses Messages SSE; there is no stream-json.]
 - Map into existing `gents_protocol::message::ToolCall` / `StreamedAssistantContent::ToolCall` so `loop_stream` / `dispatch_tool` / `hook.on_tool_call` do not grow a Claude-only dispatch path.
-- Fake-completer fixtures (JSONL with `tool_use`, paired results, unmapped names).
+- Fake-completer fixtures (JSONL with `tool_use`, paired results, unmapped names). [Superseded 2026-09-03 by the single wire: test-only SSE fixtures queued through `claude_messages` (`#[cfg(test)]`).]
 - Name translation tables (if any) and argv/env construction.
-- Server flags already exist (`--claude-config-dir`, `--claude-write-approved`, `--claude-bin`, workdir, log-dir).
+- Server flags already exist (`--claude-config-dir`, `--claude-write-approved`, `--claude-bin`, workdir, log-dir). [Superseded 2026-09-03 by the single wire: only `--claude-config-dir` and `--claude-write-approved` remain; `--claude-bin`, workdir and log-dir went with the process completer.]
 
 **A2c rule:** if implementation discovers that Claude cannot emit a homomorphism into the native tool-call/result row model, **stop and extend Lean** (likely a Claude provider-view in `PromptAssembly`). Do not flatten unpaired `tool_use` into ordinary assistant text to “make the CLI work.”
 
