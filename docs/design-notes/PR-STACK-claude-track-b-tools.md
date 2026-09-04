@@ -5,6 +5,8 @@
 **Base:** `spike/claude-p4-write-gate` (Track A complete). Own branches; not P5 on the P1–P4 Graphite stack.
 **Not this track:** fork-retry; restoring Grok as prod default (ask first); renaming `ClaudeCliSubscription`; desktop UI; letting Claude Code execute tools.
 
+**Status (2026-09-03):** B3 is done — write requests #7–#10 (`.scratch/claude-spike/logs/b3-live-args-evidence.md`, `b3-live-http-text-evidence.md`; `b3-live-single-wire-evidence.md` is an environmental FAIL on an expired seat, pending re-run). The two-wire Completer (process CLI for empty surfaces, Messages HTTP for tools) was retired on 2026-09-03 in favour of the single Messages wire — see [`docs/superpowers/specs/2026-09-03-claude-single-wire-design.md`](../superpowers/specs/2026-09-03-claude-single-wire-design.md). B4 (spawn / subagent) is still later.
+
 Track A made Claude an honest **text** provider (stream, usage, seat health, write-gate). That is still text-only: `--tools ""`, fail-closed on any `tool_use`. Track B is a different product: Claude may **request** gents tools; gents **executes** them on the same owned loop as Grok/Codex.
 
 ## Why this is its own track

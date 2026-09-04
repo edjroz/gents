@@ -316,7 +316,13 @@ impl MessagesSseState {
         let raw = std::mem::take(&mut self.data);
         let payload: Value = match serde_json::from_str(&raw) {
             Ok(value) => value,
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => {
+                tracing::debug!(
+                    len = raw.len(),
+                    "claude messages: ignoring non-JSON SSE payload"
+                );
+                return Ok(Vec::new());
+            }
         };
         self.handle_payload(&payload)
     }
@@ -517,7 +523,7 @@ pub(crate) fn stream_sse_body(
 {
     async_stream::stream! {
         let mut body = body;
-        let mut state = Some(state);
+        let mut state = state;
         let mut buffer: Vec<u8> = Vec::new();
         while let Some(chunk) = body.next().await {
             let chunk = match chunk {
@@ -531,8 +537,7 @@ pub(crate) fn stream_sse_body(
             while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
                 let line: Vec<u8> = buffer.drain(..=newline).collect();
                 let line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
-                let Some(current) = state.as_mut() else { return; };
-                match current.push_line(&line) {
+                match state.push_line(&line) {
                     Ok(events) => {
                         for event in events {
                             yield Ok(event);
@@ -545,15 +550,14 @@ pub(crate) fn stream_sse_body(
                 }
             }
         }
-        let Some(mut current) = state.take() else { return; };
         if !buffer.is_empty() {
             let line = String::from_utf8_lossy(&buffer).into_owned();
-            match current.push_line(&line) {
+            match state.push_line(&line) {
                 Ok(events) => for event in events { yield Ok(event); },
                 Err(error) => { yield Err(error); return; }
             }
         }
-        match current.finish() {
+        match state.finish() {
             Ok(events) => for event in events { yield Ok(event); },
             Err(error) => yield Err(error),
         }
@@ -612,7 +616,19 @@ pub async fn stream_messages(
         fixture,
         live: seat.http.clone(),
     });
-    let response = client.send_streaming(http_request).await?;
+    let response = match client.send_streaming(http_request).await {
+        Ok(response) => response,
+        // rig's reqwest transport pre-checks the status and hands back the
+        // body text; bound it the same way as the streamed path.
+        Err(http_client::Error::InvalidStatusCodeWithMessage(status, message)) => {
+            return Err(non_success_error(
+                status,
+                None,
+                &body_prefix(message.as_bytes()),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let status = response.status();
     let request_id = response
         .headers()
@@ -620,15 +636,55 @@ pub async fn stream_messages(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     if !status.is_success() {
-        return Err(CompletionError::ProviderError(format!(
-            "Claude Messages HTTP {status} (request-id {})",
-            request_id.as_deref().unwrap_or("-")
-        )));
+        let prefix = read_body_prefix(response.into_body()).await;
+        return Err(non_success_error(status, request_id.as_deref(), &prefix));
     }
     Ok(stream_sse_body(
         response.into_body(),
         MessagesSseState::new(surface).with_request_id(request_id),
     ))
+}
+
+/// Longest response-body prefix kept in a non-2xx error.
+const NON_SUCCESS_BODY_PREFIX_BYTES: usize = 512;
+
+/// Non-2xx Messages response as a `ProviderError`. Carries the status, the
+/// `request-id` header and a bounded body prefix (Anthropic's
+/// `error.type`/`error.message`); never request headers.
+fn non_success_error(
+    status: reqwest::StatusCode,
+    request_id: Option<&str>,
+    body_prefix: &str,
+) -> CompletionError {
+    let mut message = format!(
+        "Claude Messages HTTP {status} (request-id {})",
+        request_id.unwrap_or("-")
+    );
+    if !body_prefix.is_empty() {
+        message.push_str(" body=");
+        message.push_str(body_prefix);
+    }
+    CompletionError::ProviderError(message)
+}
+
+/// Up to [`NON_SUCCESS_BODY_PREFIX_BYTES`] of `bytes`, lossily decoded and
+/// trimmed.
+fn body_prefix(bytes: &[u8]) -> String {
+    let end = bytes.len().min(NON_SUCCESS_BODY_PREFIX_BYTES);
+    String::from_utf8_lossy(&bytes[..end]).trim().to_string()
+}
+
+/// Drain at most the prefix budget from a non-2xx body; read errors end the
+/// prefix early rather than failing the (already failed) request.
+async fn read_body_prefix(mut body: http_client::sse::BoxedStream) -> String {
+    let mut bytes: Vec<u8> = Vec::new();
+    while bytes.len() < NON_SUCCESS_BODY_PREFIX_BYTES {
+        match body.next().await {
+            Some(Ok(chunk)) => bytes.extend_from_slice(&chunk),
+            Some(Err(_)) | None => break,
+        }
+    }
+    body_prefix(&bytes)
 }
 
 /// Serves a queued SSE fixture or forwards to the seat's shared client. Sits

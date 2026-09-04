@@ -3,7 +3,7 @@
 //! `--claude-write-approved`.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use futures::StreamExt;
@@ -104,7 +104,21 @@ pub fn require_process_seat() -> Result<ClaudeSeatConfig, CompletionError> {
 /// error's `Display` plus the `claude-login` hint for expired/missing seats.
 pub fn probe_process_seat_health() -> Result<String, String> {
     let seat = process_seat().ok_or_else(|| "process seat not installed".to_string())?;
-    match read_seat_access_token(&seat.config_dir) {
+    seat_detail(&seat.config_dir)
+}
+
+/// Seat probe for an explicit config dir (e.g. right after `claude-login`),
+/// as JSON: `{"ok": bool, "detail": String}`. Same read and wording as
+/// [`probe_process_seat_health`]; never carries the token.
+pub fn probe_seat_detail(config_dir: &Path) -> serde_json::Value {
+    match seat_detail(config_dir) {
+        Ok(detail) => serde_json::json!({ "ok": true, "detail": detail }),
+        Err(detail) => serde_json::json!({ "ok": false, "detail": detail }),
+    }
+}
+
+fn seat_detail(config_dir: &Path) -> Result<String, String> {
+    match read_seat_access_token(config_dir) {
         Ok(token) => Ok(format!(
             "source={} expires_at={}",
             match token.source() {
@@ -119,7 +133,7 @@ pub fn probe_process_seat_health() -> Result<String, String> {
         Err(error @ (SeatAuthError::Expired { .. } | SeatAuthError::MissingFile { .. })) => {
             Err(format!(
                 "{error}; run gents claude-login --config-dir {}",
-                seat.config_dir.display()
+                config_dir.display()
             ))
         }
         Err(error) => Err(error.to_string()),
@@ -173,6 +187,10 @@ impl CompletionModel for ClaudeSubscriptionModel {
     /// Non-streaming turn: drains the same Messages stream `stream` returns
     /// and folds the text. Calls `stream_messages` directly so the only
     /// provider invocations in this crate stay inside the owned loop.
+    ///
+    /// Text-only by construction: the owned loop uses `stream()`, so this
+    /// path never maps `tool_use`; a tool-only turn here surfaces as the
+    /// empty-assistant-text error below.
     async fn completion(
         &self,
         request: CompletionRequest,

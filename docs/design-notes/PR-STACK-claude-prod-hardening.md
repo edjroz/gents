@@ -83,7 +83,7 @@ P3 does not technically depend on P1/P2 (health never touches stdout). Keep it s
 
 **Change.** Keep the replicated document probe-status as **operator intent** (do not stamp `unhealthy` from N runtimes). Add a **process-local** measurement:
 
-- Reuse `gents claude-auth-probe` semantics (`claude auth status` under `CLAUDE_CONFIG_DIR`, read-only, not billable).
+- Reuse the seat probe semantics (read-only, not billable). *2026-09-03: the CLI probe command is retired; health is the same seat-token read the wire performs (`claude_subscription::probe_process_seat_health`).*
 - Feed `BackendHealthMap` the way HTTP probers do for other kinds (K=3 demote, one success promote — existing BackendHealth model).
 - Never write Claude tokens. Never spawn `-p` for health.
 - If `--claude-config-dir` is unset, Claude backends stay unavailable (`process seat not installed`) as today.

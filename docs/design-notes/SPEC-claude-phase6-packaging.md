@@ -25,7 +25,7 @@ Success looks like:
 | --- | --- | --- |
 | `claude-completer-lib` | Rust-ify Phase 1 adapter: env sanitize, argv, stream-json parse, fail-closed on `tool_use` | — |
 | `claude-loopback-proxy` | Productize Phase 2 proxy (loopback Chat Completions SSE, tool strip, request log) calling completer-lib | `claude-completer-lib` |
-| `claude-login-probe` | CLI `claude-login` + `claude-auth-probe`; seat status only; **no oat persistence** | — |
+| `claude-login-probe` | CLI `claude-login` (+ a seat probe command, retired 2026-09-03; `claude-login` now prints the `seat` field itself); seat status only; **no oat persistence** | — |
 | `claude-operator-preset` | Docs + init/config recipe: OpenAiCompatible → proxy `/v1`, model `claude-plan`, text-only behavior | `claude-loopback-proxy`, `claude-login-probe` |
 | `claude-backends-doc` | `docs/backends.md` row + spike design-note status update | `claude-operator-preset` |
 
@@ -83,8 +83,7 @@ cargo test -p gents-cli --lib claude_ -- --nocapture
 
 # Login / probe (may hit Anthropic auth — WRITE GATE if network login)
 gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
-gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"   # needs CLAUDE_WRITE_APPROVED=1
-gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"   # needs CLAUDE_WRITE_APPROVED=1; prints seat: {ok, detail}
 
 # Local OpenAI adapter (Rust)
 # Default = canned (no Claude). Live needs PROXY_USE_CLAUDE=1 + CLAUDE_WRITE_APPROVED=1.
@@ -131,9 +130,7 @@ gents claude-login --config-dir "$CLAUDE_CONFIG_DIR" --dry-run
 # shell if the Claude CLI needs keychain / browser.
 CLAUDE_WRITE_APPROVED=1 gents claude-login --config-dir "$CLAUDE_CONFIG_DIR"
 
-# Read-only probe (no write gate). Expect logged_in=true, auth_method=claude.ai,
-# subscription_type=max, api_key_source=none, oauth_credential_written=false.
-gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+# Seat probe command retired 2026-09-03: `claude-login` prints `seat: {ok, detail}` after login.
 ```
 
 ### 2. Start loopback OpenAI adapter
@@ -182,7 +179,7 @@ upsert for Claude, or traffic leaves loopback.
 ### 5. Verify no oat
 
 ```bash
-gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
+# Seat probe command retired 2026-09-03; read the `seat` field printed by `gents claude-login`.
 # Confirm oauth_credential_written=false and credential_store=claude_config_dir.
 # On the smoke home, OAuthCredential count for any Claude/Anthropic provider must stay 0.
 ```
@@ -192,7 +189,6 @@ gents claude-auth-probe --config-dir "$CLAUDE_CONFIG_DIR"
 ```text
 crates/gents/src/claude_completer/     # parse + argv + env sanitize (new)
 crates/gents-cli/src/commands/claude_login.rs
-crates/gents-cli/src/commands/claude_auth_probe.rs
 # proxy: either keep script under tools/ or .scratch promotion path documented
 docs/backends.md
 docs/design-notes/claude-subscription-spike.md
@@ -268,7 +264,7 @@ Coverage bar: parser + env sanitize covered by unit tests before any live Claude
 
 - [x] Completer library parses fixtures fail-closed without invoking Claude
 - [x] Documented operator path: login → proxy → gents OpenAiCompatible turn
-- [x] `gents claude-login` / `claude-auth-probe` exist and do not write oat docs
+- [x] `gents claude-login` (and the since-retired seat probe command) exist and do not write oat docs
 - [x] `OAuthCredential` count for Claude provider remains 0 on packaging smoke home
 - [x] `docs/backends.md` documents Claude Max subscription via loopback completer
 - [x] Parent spike design note marks Phase 6 Path A status (packaged / partial)
@@ -280,7 +276,7 @@ Evidence: `.scratch/claude-spike/logs/task20-packaging-evidence.md` (write reque
 ## Open questions — locked 2026-08-30
 
 1. **Proxy / adapter language:** **Rust** (spike Python is reference only).
-2. **Command names:** `gents claude-login` + `gents claude-auth-probe`.
+2. **Command names:** `gents claude-login` (+ a seat probe command, retired 2026-09-03).
 3. **Config dir default:** **require explicit `--config-dir`** (no silent `~/.claude`).
 4. **Adapter packaging location:** **`gents claude-proxy`** CLI subcommand
    (local OpenAI Chat Completions adapter in front of Claude CLI).

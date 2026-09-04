@@ -178,7 +178,9 @@ inductive Msg where
 oat routes on it. Checked against Rust `CLAUDE_CODE_IDENTITY` by the vocab test. -/
 def identity : String := "You are Claude Code, Anthropic's official CLI for Claude."
 
-/-- Pull `System` rows out in order; everything else is untouched. -/
+/-- Pull `System` rows out in order; everything else is untouched. Rust also
+trims a whitespace-only preamble and drops blank `System` rows before this
+split; the model does not represent that and no witness covers it. -/
 def splitSystem : List Msg → List String × List Msg
   | [] => ([], [])
   | .system t :: rest =>
@@ -188,6 +190,8 @@ def splitSystem : List Msg → List String × List Msg
     let (sys, others) := splitSystem rest
     (sys, m :: others)
 
+/-- `system[]` on the wire: identity first, then the preamble, then the `System`
+rows verbatim (blank-row dropping happens in Rust before `rows` is built). -/
 def systemBlocks (preamble : Option String) (rows : List String) : List String :=
   identity :: (preamble.toList ++ rows)
 
@@ -305,7 +309,7 @@ def runStream (surface : Surface) (events : List StreamEvent) :
 
 /-- `Except` ships no `DecidableEq`; the `runStream` witnesses below decide
 equality on `Except MapError (List (ToolCallId × String))`. -/
-instance instDecidableEqExcept {ε α : Type} [DecidableEq ε] [DecidableEq α] :
+local instance instDecidableEqExcept {ε α : Type} [DecidableEq ε] [DecidableEq α] :
     DecidableEq (Except ε α)
   | .error a, .error b =>
     if h : a = b then .isTrue (h ▸ rfl) else .isFalse (fun e => h (Except.error.inj e))

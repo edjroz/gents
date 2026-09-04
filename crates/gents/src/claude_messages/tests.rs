@@ -243,6 +243,7 @@ fn messages_body_omits_tools_key_when_surface_is_empty() {
     assert!(body.get("tools").is_none(), "{body}");
     let with_tools = build_messages_body("claude-sonnet-5", &echo_request());
     assert_eq!(with_tools["tools"][0]["name"], "echo");
+    assert_eq!(with_tools["tools"].as_array().map(Vec::len), Some(1));
 }
 
 #[test]
@@ -464,4 +465,31 @@ async fn first_text_event_is_observable_before_the_body_is_exhausted() {
         rest.last().unwrap().as_ref().unwrap(),
         RawStreamingChoice::FinalResponse(_)
     ));
+}
+
+/// Live 4xx diagnosability: status, `request-id`, and a bounded body prefix;
+/// nothing from the request side.
+#[test]
+fn non_success_error_carries_status_request_id_and_bounded_body_prefix() {
+    let err = non_success_error(
+        reqwest::StatusCode::BAD_REQUEST,
+        Some("req_123"),
+        &body_prefix(b"  {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"temperature\"}}\n"),
+    );
+    let text = err.to_string();
+    assert!(text.contains("HTTP 400 Bad Request"), "{text}");
+    assert!(text.contains("(request-id req_123)"), "{text}");
+    assert!(
+        text.ends_with(
+            " body={\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"temperature\"}}"
+        ),
+        "{text}"
+    );
+
+    let long = vec![b'x'; NON_SUCCESS_BODY_PREFIX_BYTES * 3];
+    assert_eq!(body_prefix(&long).len(), NON_SUCCESS_BODY_PREFIX_BYTES);
+
+    let bare = non_success_error(reqwest::StatusCode::TOO_MANY_REQUESTS, None, "").to_string();
+    assert!(bare.ends_with("(request-id -)"), "{bare}");
+    assert!(!bare.contains("body="), "{bare}");
 }

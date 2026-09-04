@@ -49,16 +49,13 @@ pub enum BackendProviderKind {
         alias = "grok_oauth"
     )]
     XaiGrokOAuth,
-    /// Claude Max / Claude Code CLI subscription seat (Path A in-process).
-    ///
-    /// Not an oat/`OAuthCredential` provider — seat truth lives in the process
-    /// `--claude-config-dir`. `is_agent_scoped_oauth()` stays false.
+    /// Claude subscription seat over Messages HTTP. Seat truth lives in the
+    /// process `--claude-config-dir`; the `claude` binary is a login-time
+    /// dependency only. `is_agent_scoped_oauth()` stays false.
     #[serde(
         rename = "ClaudeCliSubscription",
         alias = "claude-cli-subscription",
-        alias = "claude_cli_subscription",
-        alias = "claude-max-cli",
-        alias = "claude_max_cli"
+        alias = "claude_cli_subscription"
     )]
     ClaudeCliSubscription,
 }
@@ -87,9 +84,7 @@ impl BackendProviderKind {
             | Some("grok_oauth") => Ok(Self::XaiGrokOAuth),
             Some("ClaudeCliSubscription")
             | Some("claude-cli-subscription")
-            | Some("claude_cli_subscription")
-            | Some("claude-max-cli")
-            | Some("claude_max_cli") => Ok(Self::ClaudeCliSubscription),
+            | Some("claude_cli_subscription") => Ok(Self::ClaudeCliSubscription),
             Some(other) => anyhow::bail!("unknown backend provider kind {other}"),
         }
     }
@@ -358,6 +353,27 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn claude_max_cli_spellings_are_not_accepted() {
+        for spelling in ["claude-max-cli", "claude_max_cli"] {
+            assert!(
+                BackendProviderKind::parse_optional(Some(spelling)).is_err(),
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            BackendProviderKind::parse_optional(Some("claude_cli_subscription")).unwrap(),
+            BackendProviderKind::ClaudeCliSubscription
+        );
+        let parsed: BackendProviderKind = serde_json::from_str("\"claude-max-cli\"")
+            .unwrap_or(BackendProviderKind::OpenAiCompatible);
+        assert_ne!(
+            parsed,
+            BackendProviderKind::ClaudeCliSubscription,
+            "serde alias must be gone"
+        );
+    }
 
     #[tokio::test]
     async fn discover_models_reads_openai_models_and_sends_api_key() {

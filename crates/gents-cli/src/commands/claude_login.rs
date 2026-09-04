@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::cli::args::{ClaudeAuthProbeArgs, ClaudeLoginArgs};
+use crate::cli::args::ClaudeLoginArgs;
 use crate::request_helpers::print_json;
 use gents::claude_completer::sanitize_child_env;
 
@@ -42,16 +42,13 @@ pub(crate) async fn claude_login(args: ClaudeLoginArgs) -> Result<()> {
         );
     }
     run_claude_login(&plan)?;
-    // Re-probe so the operator sees the resulting seat without a second command.
-    let probe = crate::commands::claude_auth_probe::run_claude_auth_probe(&ClaudeAuthProbeArgs {
-        config_dir: plan.config_dir.clone(),
-        claude_bin: Some(plan.claude_bin.clone()),
-    })?;
+    // Re-read the seat the way the wire does so the operator sees the result
+    // without a second command.
     print_json(&json!({
         "login": "completed",
         "oauth_credential_written": false,
         "credential_store": "claude_config_dir",
-        "probe": crate::commands::claude_auth_probe::claude_auth_probe_result_json(&probe),
+        "seat": gents::claude_subscription::probe_seat_detail(&plan.config_dir),
     }))?;
     Ok(())
 }
@@ -60,29 +57,19 @@ pub(crate) fn plan_claude_login(args: &ClaudeLoginArgs) -> Result<ClaudeLoginPla
     if args.config_dir.as_os_str().is_empty() {
         bail!("--config-dir is required (no silent ~/.claude default)");
     }
-    if args.console && args.sso {
-        bail!("--console and --sso are mutually exclusive for Path A login wrapping");
-    }
     let config_dir = args.config_dir.clone();
     let claude_bin = args
         .claude_bin
         .clone()
         .unwrap_or_else(|| PathBuf::from("claude"));
 
+    // Always the Claude subscription seat (not Console API billing).
     let mut argv = vec![
         claude_bin.display().to_string(),
         "auth".to_string(),
         "login".to_string(),
+        "--claudeai".to_string(),
     ];
-    if args.console {
-        argv.push("--console".to_string());
-    } else {
-        // Default Path A: Claude subscription seat (not Console API billing).
-        argv.push("--claudeai".to_string());
-    }
-    if args.sso {
-        argv.push("--sso".to_string());
-    }
     if let Some(email) = &args.email {
         if email.trim().is_empty() {
             bail!("--email must not be empty when provided");
@@ -151,9 +138,7 @@ mod tests {
             claude_bin: None,
             dry_run: true,
             claude_write_approved: false,
-            console: false,
             email: None,
-            sso: false,
         }
     }
 
@@ -184,15 +169,6 @@ mod tests {
         let plan = plan_claude_login(&args).expect("plan");
         assert!(plan.write_approved);
         assert!(!plan.dry_run);
-    }
-
-    #[test]
-    fn console_flag_replaces_claudeai() {
-        let mut args = base_args();
-        args.console = true;
-        let plan = plan_claude_login(&args).expect("plan");
-        assert!(plan.argv.iter().any(|a| a == "--console"));
-        assert!(!plan.argv.iter().any(|a| a == "--claudeai"));
     }
 
     #[test]

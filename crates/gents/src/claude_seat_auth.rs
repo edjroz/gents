@@ -98,7 +98,9 @@ struct ClaudeAiOauth {
 ///
 /// `config_dir` is the explicit process seat (`--claude-config-dir`). This
 /// function does not fall back to `~/.claude`. On macOS, a missing file falls
-/// through to the Claude CLI Keychain item for this config dir.
+/// through to the Claude CLI Keychain item for this config dir; when that item
+/// is absent, or the Keychain account (`USER`/`LOGNAME`) is unset so no lookup
+/// is possible, the file error is reported so the hint names the path.
 pub fn read_seat_access_token(config_dir: &Path) -> Result<SeatAccessToken, SeatAuthError> {
     read_seat_access_token_at(config_dir, now_millis)
 }
@@ -112,7 +114,9 @@ fn read_seat_access_token_at(
         Err(file_err @ SeatAuthError::MissingFile { .. }) => {
             match read_macos_keychain_credentials(config_dir) {
                 Ok(raw) => parse_credentials(&raw, now_millis, SeatTokenSource::Keychain),
-                Err(SeatAuthError::KeychainNotFound { .. }) => Err(file_err),
+                Err(
+                    SeatAuthError::KeychainNotFound { .. } | SeatAuthError::KeychainAccountUnset,
+                ) => Err(file_err),
                 Err(other) => Err(other),
             }
         }

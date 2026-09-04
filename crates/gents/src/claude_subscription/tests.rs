@@ -153,3 +153,21 @@ fn parse_aliases_round_trip() {
     assert!(crate::BackendProviderKind::ChatGptCodex.skips_fleet_http_probe());
     assert!(!crate::BackendProviderKind::OpenAiCompatible.skips_fleet_http_probe());
 }
+
+/// `claude-login` prints this after a live login: the wire's own token read,
+/// never the token.
+#[test]
+fn probe_seat_detail_reports_missing_seat_with_login_hint() {
+    let temp = tempfile::tempdir().unwrap();
+    let value = probe_seat_detail(temp.path());
+    assert_eq!(value["ok"], false, "{value}");
+    let detail = value["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("gents claude-login --config-dir"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains(&temp.path().display().to_string()),
+        "{detail}"
+    );
+}

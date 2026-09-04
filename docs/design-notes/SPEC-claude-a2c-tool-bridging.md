@@ -222,6 +222,14 @@ The Messages client authenticates from the **process seat** (`--claude-config-di
 
 Do **not** enable MCP so Claude Code runs gents tools.
 
+**Recorded 2026-09-03 (single wire, as shipped):**
+
+- The Claude Code identity block is `system[0]` on every request (Lean `ClaudeMap.systemBlocks_head`); the assembled preamble and `Message::System` rows follow verbatim.
+- macOS Keychain is read via `security(1)` when `.credentials.json` is absent; the file stays the Linux/testable path.
+- One wire: every Claude turn, tool-capable or text-only, goes over Messages HTTP. The process-CLI Completer is gone; the `claude` binary is a login-time dependency only.
+- `tools` is omitted from the body when the surface is empty (Lean `ClaudeMap.toolsField_empty`), never sent as `[]`.
+- Two `cache_control` breakpoints: the last `system` block and the last content block.
+
 ## Fail-closed / audit semantics
 
 Match the existing tool-call lifecycle. Do not add a Claude-only “best effort” path.
@@ -348,15 +356,15 @@ This SPEC is done when it is specific enough to run Track B (B1 evidence + B2 Le
 
 ## Open questions (human; do not imply answers)
 
-1. **Protocol lock:** C1 (CLI stream-json) vs C2 (native Messages API)? Is there evidence Claude Code can *declare* custom tools without *executing* them?
+1. **Protocol lock:** C1 (CLI stream-json) vs C2 (native Messages API)? Is there evidence Claude Code can *declare* custom tools without *executing* them? — **Closed 2026-09-03:** C2 on a single Messages wire; `.scratch/claude-spike/logs/b3-live-args-evidence.md`, `b3-live-single-wire-evidence.md`.
 2. **Result feedback (C1):** `--resume` / session continuation vs a fresh `-p` with flattened history vs `--input-format stream-json`? Which of those is a PromptAssembly homomorphism?
-3. **C2 auth:** may gents call Anthropic HTTP using the CLI seat on disk without persisting oat in `OAuthCredential`? Or is any native API out of Path A forever?
+3. **C2 auth:** may gents call Anthropic HTTP using the CLI seat on disk without persisting oat in `OAuthCredential`? Or is any native API out of Path A forever? — **Closed 2026-09-03:** yes; seat file or Keychain via `security(1)`, `OAuthCredential` count stays 0; `.scratch/claude-spike/logs/b3-live-http-text-evidence.md`.
 4. **Name map:** fail closed on Claude-native names always, or lock an explicit alias table (`Bash`/`bash`, `Read`/`read_file`)? Default proposal: **no aliases**.
-5. **Empty surface:** keep A2b `--tools ""` + reject `tool_use` when `ToolDyn[]` is empty?
+5. **Empty surface:** keep A2b `--tools ""` + reject `tool_use` when `ToolDyn[]` is empty? — **Closed 2026-09-03:** empty surface goes over the same Messages wire with `tools` omitted and `tool_use` rejected fail-closed; `.scratch/claude-spike/logs/b3-live-http-text-evidence.md`.
 6. **Subagent v1:** include `spawn_subagent` / bridge tools in the first A2c slice, or native+MCP only?
 7. **`FailureClass`:** reuse `policyDenied` / `external` for unmapped Claude tools, or add a class? (Lean if new.)
 8. **CLI version floor:** still Claude Code 2.1.x, or does C1 need a newer flag set?
-9. **`--system-prompt`:** A2b overwrites with a text-only instruction. A2c must not clobber the gents preamble/skills assembly (`PromptAssembly.Template` layer order). How does the CLI `--system-prompt` interact with the assembled request?
+9. **`--system-prompt`:** A2b overwrites with a text-only instruction. A2c must not clobber the gents preamble/skills assembly (`PromptAssembly.Template` layer order). How does the CLI `--system-prompt` interact with the assembled request? — **Closed 2026-09-03:** no CLI in the wire; the assembled preamble rides as `system[1..]` behind the identity block; `.scratch/claude-spike/logs/b3-live-identity-evidence.md`, `b3-live-single-wire-evidence.md` (pending re-run).
 10. **Usage reporting:** stream-json `result` usage vs aggregate-budget fail-closed `Missing` charge — acceptable for v1?
 11. **Partial/streaming tool_use:** wait for a complete content block before `on_tool_call`, or map deltas? Owned loop currently ignores `ToolCallDelta`.
 12. **Parallel `tool_use` blocks in one assistant message:** map 1:1 to parallel `dispatch_tool` like OpenAI, or serialize? (Lifecycle allows multiple calls; UniqueCallIds still applies.)
