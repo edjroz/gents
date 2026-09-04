@@ -26,7 +26,11 @@ use gents::llm::message::{
 
 use std::collections::HashSet;
 
-use gents::claude_messages::{CLAUDE_CODE_IDENTITY, build_messages_body, parse_messages_sse};
+use gents::claude_messages::{
+    CLAUDE_CODE_IDENTITY, build_messages_body_native, parse_messages_sse,
+};
+use gents::claude_subscription::ClaudeStreamResponse;
+use rig::completion::CompletionError;
 use rig::streaming::RawStreamingChoice;
 
 use crate::lean_vocab_test::{
@@ -350,41 +354,38 @@ fn generated_claude_map_cases_drive_the_messages_parser() {
                     .collect();
                 assert_eq!(got_ids, case.ids, "mapped ids ({})", case.name);
             }
-            "emptySurface" => {
-                let err = parsed
-                    .expect_err("empty surface must fail closed")
-                    .to_string();
-                assert!(
-                    err.contains("fail-closed: tool_use observed"),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            outcome if outcome.starts_with("unmappedName:") => {
-                let name = outcome.strip_prefix("unmappedName:").expect("prefix");
-                let err = parsed
-                    .expect_err("unmapped name must fail closed")
-                    .to_string();
-                assert!(
-                    err.contains("fail-closed: tool_use observed") && err.contains(name),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            outcome if outcome.starts_with("duplicateId:") => {
-                let id = outcome.strip_prefix("duplicateId:").expect("prefix");
-                let err = parsed
-                    .expect_err("duplicate id must fail closed")
-                    .to_string();
-                assert!(
-                    err.contains(&format!("fail-closed: duplicate tool_use id {id}")),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            other => panic!("case {} unknown outcome {other}", case.name),
+            outcome => assert_fail_closed(&case.name, outcome, parsed),
         }
     }
+}
+
+/// Shared fail-closed oracle for the ClaudeMap and stream witnesses: the
+/// Lean `errorName` tag must correspond to the parser's frozen Display text.
+fn assert_fail_closed(
+    case_name: &str,
+    outcome: &str,
+    parsed: Result<Vec<RawStreamingChoice<ClaudeStreamResponse>>, CompletionError>,
+) {
+    let err = parsed
+        .expect_err("witness outcome is an error; parser must fail closed")
+        .to_string();
+    let ok = match outcome {
+        "emptySurface" => err.contains("fail-closed: tool_use observed"),
+        o if o.starts_with("unmappedName:") => {
+            let name = o.strip_prefix("unmappedName:").expect("prefix");
+            err.contains("fail-closed: tool_use observed") && err.contains(name)
+        }
+        o if o.starts_with("duplicateId:") => err.contains(&format!(
+            "fail-closed: duplicate tool_use id {}",
+            o.strip_prefix("duplicateId:").expect("prefix")
+        )),
+        o if o.starts_with("overlappingBlock:") => err.contains(&format!(
+            "fail-closed: overlapping tool_use block {}",
+            o.strip_prefix("overlappingBlock:").expect("prefix")
+        )),
+        other => panic!("case {case_name} unknown outcome {other}"),
+    };
+    assert!(ok, "case {case_name}: outcome {outcome} but error was: {err}");
 }
 
 fn sse_event(payload: serde_json::Value) -> String {
@@ -472,44 +473,7 @@ fn generated_claude_stream_cases_drive_the_messages_parser() {
                     .collect();
                 assert_eq!(got, want, "calls ({})", case.name);
             }
-            "emptySurface" => {
-                let err = parsed
-                    .expect_err("empty surface must fail closed")
-                    .to_string();
-                assert!(
-                    err.contains("fail-closed: tool_use observed"),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            outcome if outcome.starts_with("unmappedName:") => {
-                let name = outcome.strip_prefix("unmappedName:").expect("prefix");
-                let err = parsed.expect_err("unmapped must fail closed").to_string();
-                assert!(
-                    err.contains("fail-closed: tool_use observed") && err.contains(name),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            outcome if outcome.starts_with("duplicateId:") => {
-                let id = outcome.strip_prefix("duplicateId:").expect("prefix");
-                let err = parsed.expect_err("duplicate must fail closed").to_string();
-                assert!(
-                    err.contains(&format!("fail-closed: duplicate tool_use id {id}")),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            outcome if outcome.starts_with("overlappingBlock:") => {
-                let id = outcome.strip_prefix("overlappingBlock:").expect("prefix");
-                let err = parsed.expect_err("overlap must fail closed").to_string();
-                assert!(
-                    err.contains(&format!("fail-closed: overlapping tool_use block {id}")),
-                    "case {}: {err}",
-                    case.name
-                );
-            }
-            other => panic!("case {} unknown outcome {other}", case.name),
+            outcome => assert_fail_closed(&case.name, outcome, parsed),
         }
     }
 }
@@ -554,13 +518,11 @@ fn claude_stream_events_as_sse(events: &[String]) -> String {
     sse
 }
 
-/// Fence: `build_messages_body` reproduces `ClaudeMap.systemBlocks` /
+/// Fence: `build_messages_body_native` reproduces `ClaudeMap.systemBlocks` /
 /// `splitSystem` / `toolsField` — identity first, preamble, then `System`
 /// rows in order; `tools` absent for an empty surface.
 #[test]
 fn generated_claude_body_cases_drive_the_body_builder() {
-    use rig::completion::message::{Message, Text, UserContent};
-    use rig::one_or_many::OneOrMany;
     let cases = lean_prompt_assembly_claude_body_cases();
     assert!(
         !cases.is_empty(),
@@ -578,33 +540,26 @@ fn generated_claude_body_cases_drive_the_body_builder() {
                 } else if row == "other:assistant" {
                     Message::assistant("ok")
                 } else {
-                    Message::User {
-                        content: OneOrMany::one(UserContent::Text(Text { text: "hi".into() })),
-                    }
+                    Message::user("hi")
                 }
             })
             .collect();
-        let request = rig::completion::CompletionRequest {
-            model: None,
-            preamble: case.preamble.clone(),
-            chat_history: OneOrMany::many(history).expect("at least one row"),
-            documents: Vec::new(),
-            tools: case
-                .tools
-                .iter()
-                .map(|name| rig::completion::ToolDefinition {
-                    name: name.clone(),
-                    description: name.clone(),
-                    parameters: serde_json::json!({"type": "object"}),
-                })
-                .collect(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-            output_schema: None,
-        };
-        let body = build_messages_body("claude-sonnet-5", &request);
+        let tools: Vec<rig::completion::ToolDefinition> = case
+            .tools
+            .iter()
+            .map(|name| rig::completion::ToolDefinition {
+                name: name.clone(),
+                description: name.clone(),
+                parameters: serde_json::json!({"type": "object"}),
+            })
+            .collect();
+        let body = build_messages_body_native(
+            "claude-sonnet-5",
+            case.preamble.as_deref(),
+            None,
+            &history,
+            &tools,
+        );
         let system: Vec<String> = body["system"]
             .as_array()
             .unwrap_or_else(|| panic!("case {} system array: {body}", case.name))

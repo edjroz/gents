@@ -653,16 +653,13 @@ pub enum ProvenanceStatus {
 ///
 /// Recorded positively so a reader never has to infer it. A row that says
 /// `TransportBody` is claiming the stronger thing: these are the bytes the HTTP
-/// client forwarded, after every provider-specific rewrite. A row that says
-/// `ProcessCli` was captured by an in-process Completer immediately before it
-/// spawned a local CLI (no HTTP body exists).
+/// client forwarded, after every provider-specific rewrite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSeam {
-    /// The last `HttpClientExt` before the network client.
+    /// The last `HttpClientExt` before the network client. The only seam
+    /// version 1 emits.
     TransportBody,
-    /// In-process Completer argv/prompt seam (Claude CLI subscription).
-    ProcessCli,
 }
 
 /// The admission identity of the provider call this capture preceded: the
@@ -724,27 +721,11 @@ impl ProvenanceManifest {
         admission: Option<AdmissionJoin>,
         assembly_trace: AssemblyTrace,
     ) -> Self {
-        Self::captured_only_at(
-            capture_scope,
-            provider_endpoint,
-            admission,
-            assembly_trace,
-            CaptureSeam::TransportBody,
-        )
-    }
-
-    pub fn captured_only_at(
-        capture_scope: String,
-        provider_endpoint: Option<String>,
-        admission: Option<AdmissionJoin>,
-        assembly_trace: AssemblyTrace,
-        capture_seam: CaptureSeam,
-    ) -> Self {
         Self {
             manifest_version: PROVENANCE_MANIFEST_VERSION,
             status: ProvenanceStatus::CapturedOnly,
             status_reason: Self::CAPTURED_ONLY_REASON.to_string(),
-            capture_seam,
+            capture_seam: CaptureSeam::TransportBody,
             capture_scope,
             provider_endpoint,
             admission,
@@ -1061,7 +1042,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_subscription_classifies_messages_http_and_not_process_cli_urls() {
+    fn claude_cli_subscription_classifies_messages_http_urls_only() {
         assert_eq!(
             RenderedRequestSource::ClaudeCliSubscription.messages_field(),
             "messages"
@@ -1078,23 +1059,6 @@ mod tests {
         assert_eq!(
             RenderedRequestSource::for_request_path("claude-cli://subscription"),
             None
-        );
-    }
-
-    #[test]
-    fn process_cli_seam_round_trips_in_the_manifest() {
-        let manifest = ProvenanceManifest::captured_only_at(
-            "inference.1".to_string(),
-            Some("claude-cli://subscription".to_string()),
-            None,
-            AssemblyTrace::from_effective_messages(AssemblyBuildPath::Budgeted, Vec::new()),
-            CaptureSeam::ProcessCli,
-        );
-        let serialized = serde_json::to_string(&manifest).expect("serialize manifest");
-        assert!(serialized.contains("\"capture_seam\":\"process_cli\""));
-        assert_eq!(
-            ProvenanceManifest::parse(&serialized).expect("reader accepts process-CLI manifest"),
-            ParsedProvenance::Manifest(Box::new(manifest))
         );
     }
 

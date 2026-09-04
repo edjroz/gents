@@ -6,11 +6,10 @@ import Proofs.Basic
 The owned completion loop assembles a provider request, arms this attempt's
 capture (`on_rendered_request`, `crates/gents/src/agent/loop_stream.rs`), and
 the innermost HTTP transport then persists the body it is about to post before
-it posts it (`crates/gents/src/rendered_request/transport.rs`). Non-HTTP
-Completers (Claude CLI subscription) keep the same persist-before-send order at
-`CaptureSeam::ProcessCli` (`claim_and_capture_process_cli`) rather than the HTTP
-transport; `CanonicalRequest` stays opaque, so that seam is not a new modeled
-obligation. This model fences the *order*: a provider send is legal only after
+it posts it (`crates/gents/src/rendered_request/transport.rs`). Every provider,
+the Claude subscription seat included, posts through that one HTTP transport, so
+`CaptureSeam::TransportBody` is the only seam version 1 emits; `CanonicalRequest`
+stays opaque. This model fences the *order*: a provider send is legal only after
 the matching `(capture key, canonical request)` pair is durable, and one
 capture key never names two different canonical requests.
 

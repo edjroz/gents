@@ -1,12 +1,14 @@
+/// Two Messages turns through the owned loop on SSE fixtures: `tool_use echo`
+/// with streamed arguments → gents executes echo → `tool_result` continuation
+/// → text `done`. Asserts the persisted `AgentToolCall.args` carries the
+/// streamed arguments (defect C1, live-confirmed by write request #8).
 #[tokio::test]
-async fn claude_fake_completer_tool_round_trip_through_owned_loop() {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
-
+async fn claude_messages_tool_round_trip_through_owned_loop() {
+    use crate::claude_messages::{
+        install_messages_sse_fixtures, sse_fixture_final_text, sse_fixture_tool_use,
+    };
     use crate::claude_subscription::{
-        ClaudeSeatConfig, ClaudeSubscriptionClient, install_process_seat,
-        lock_process_seat_for_test,
+        ClaudeSubscriptionClient, install_fake_seat, lock_process_seat_for_test,
     };
     use crate::rendered_request::scope::{ambient_arming_sink, scope_request, test_scope};
     use crate::rendered_request::{
@@ -14,49 +16,14 @@ async fn claude_fake_completer_tool_round_trip_through_owned_loop() {
     };
     use rig::client::CompletionClient;
 
-    let _seat = lock_process_seat_for_test();
+    let _guard = lock_process_seat_for_test();
+    let _seat = install_fake_seat();
+    install_messages_sse_fixtures(vec![
+        sse_fixture_tool_use("toolu_1", "echo", "{\"text\":\"hi\"}"),
+        sse_fixture_final_text("done"),
+    ]);
     let (node, hook) = test_hook().await;
     ready_hook_for(&hook).await;
-
-    let temp = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.scratch/claude-spike/tmp")
-        .join("loop-stream-claude-round-trip");
-    let _ = std::fs::remove_dir_all(&temp);
-    std::fs::create_dir_all(&temp).expect("tempdir");
-    let echo_jsonl = temp.join("echo.jsonl");
-    std::fs::write(
-        &echo_jsonl,
-        include_str!("../../../claude_completer/fixtures/tool_use_echo.jsonl"),
-    )
-    .expect("write echo fixture");
-    let fake = temp.join("fake-completer.sh");
-    {
-        let mut file = std::fs::File::create(&fake).expect("create fake");
-        writeln!(file, "#!/bin/sh").unwrap();
-        writeln!(
-            file,
-            r#"if printf '%s' "$1" | grep -q 'tool_result'; then
-printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"done"}}]}}}}'
-printf '%s\n' '{{"type":"result","subtype":"success","result":"done","is_error":false}}'
-else
-exec cat '{}'
-fi"#,
-            echo_jsonl.display()
-        )
-        .unwrap();
-    }
-    let mut perms = std::fs::metadata(&fake).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&fake, perms).unwrap();
-    install_process_seat(Some(ClaudeSeatConfig {
-        config_dir: temp.join("claude-config"),
-        write_approved: false,
-        workdir: temp.join("workdir"),
-        log_dir: None,
-        claude_bin: PathBuf::from("claude"),
-        fake_completer: Some(fake),
-    }));
-    std::fs::create_dir_all(temp.join("workdir")).unwrap();
 
     let sink: RenderedRequestCaptureSink = Arc::new(|_| Box::pin(async { Ok(()) }));
     let scope = test_scope(
@@ -115,7 +82,7 @@ fi"#,
     assert_eq!(final_text.as_deref(), Some("done"));
 
     let resp = node
-        .execute("query { AgentToolCall { tool_name lifecycle_state result } }")
+        .execute("query { AgentToolCall { tool_name args lifecycle_state result } }")
         .await;
     assert!(
         !resp.has_errors(),
@@ -129,15 +96,22 @@ fi"#,
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
+    let echo = rows
+        .iter()
+        .find(|row| row.get("tool_name").and_then(|value| value.as_str()) == Some("echo"))
+        .unwrap_or_else(|| panic!("expected an echo AgentToolCall; rows: {rows:?}"));
+    assert_eq!(echo["lifecycle_state"], "completed");
     assert!(
-        rows.iter().any(|row| {
-            row.get("tool_name").and_then(|value| value.as_str()) == Some("echo")
-                && row.get("lifecycle_state").and_then(|value| value.as_str()) == Some("completed")
-                && row
-                    .get("result")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|result| result.contains("ECHOED"))
-        }),
-        "expected a completed echo AgentToolCall; rows: {rows:?}"
+        echo["result"]
+            .as_str()
+            .is_some_and(|result| result.contains("ECHOED")),
+        "{echo}"
+    );
+    let args: serde_json::Value =
+        serde_json::from_str(echo["args"].as_str().expect("args string")).expect("args json");
+    assert_eq!(
+        args,
+        serde_json::json!({"text": "hi"}),
+        "streamed arguments must persist"
     );
 }

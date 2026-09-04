@@ -79,48 +79,22 @@ fn announce_codex_shim(
     })
 }
 
-fn validate_claude_seat_args(args: &ServeArgs) -> Result<()> {
-    let has_seat_flags = args.claude_config_dir.is_some()
-        || args.claude_workdir.is_some()
-        || args.claude_log_dir.is_some()
-        || args.claude_fake_completer.is_some()
-        || args.claude_bin.is_some()
-        || args.claude_write_approved;
-
-    // A2b: --claude-config-dir installs the in-process seat.
-    if let Some(config_dir) = args.claude_config_dir.as_ref() {
-        if !config_dir.is_dir() {
-            anyhow::bail!(
-                "--claude-config-dir {} is not a directory",
-                config_dir.display()
-            );
-        }
-        return Ok(());
-    }
-
-    if has_seat_flags {
-        anyhow::bail!(
-            "--claude-workdir / --claude-log-dir / --claude-bin / --claude-fake-completer / --claude-write-approved require --claude-config-dir"
-        );
-    }
-    Ok(())
-}
-
 fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
     let Some(config_dir) = args.claude_config_dir.clone() else {
         gents::claude_subscription::install_process_seat(None);
         return Ok(());
     };
-    let seat = gents::claude_subscription::ClaudeSeatConfig::from_server_flags(
+    if !config_dir.is_dir() {
+        anyhow::bail!(
+            "--claude-config-dir {} is not a directory",
+            config_dir.display()
+        );
+    }
+    let seat = gents::claude_subscription::ClaudeSeatConfig::new(
         config_dir,
         args.claude_write_approved,
-        args.claude_workdir.clone(),
-        args.claude_log_dir.clone(),
         args.claude_bin.clone(),
-        args.claude_fake_completer.clone(),
     );
-    std::fs::create_dir_all(&seat.workdir)
-        .with_context(|| format!("creating Claude workdir {}", seat.workdir.display()))?;
     if seat.write_approved {
         tracing::info!(
             config_dir = %seat.config_dir.display(),
@@ -129,7 +103,7 @@ fn install_claude_subscription_seat(args: &ServeArgs) -> Result<()> {
     } else {
         tracing::info!(
             config_dir = %seat.config_dir.display(),
-            "Claude seat installed; live CLI spawns refuse-closed (pass --claude-write-approved only after numbered write approval)"
+            "Claude seat installed; live Messages sends refuse-closed (pass --claude-write-approved only after numbered write approval)"
         );
     }
     gents::claude_subscription::install_process_seat(Some(seat));
@@ -450,7 +424,6 @@ pub(crate) async fn serve_with_control(
     if args.codex_shim_public_url.is_some() && codex_shim_auth_token.is_none() {
         anyhow::bail!("--codex-shim-public-url requires --codex-shim-auth-token-env");
     }
-    validate_claude_seat_args(&args)?;
     install_claude_subscription_seat(&args)?;
     let home_dir = resolve_home_dir(args.home.as_deref());
     let data_dir = args
@@ -864,10 +837,6 @@ pub(crate) async fn serve_with_control(
                 .as_ref()
                 .map(|p| p.display().to_string()),
             "write_approved": args.claude_write_approved,
-            "fake_completer": args
-                .claude_fake_completer
-                .as_ref()
-                .map(|p| p.display().to_string()),
         }))
     } else {
         None
@@ -1461,55 +1430,37 @@ mod shim_host_tests {
 
     #[test]
     fn a2b_claude_config_dir_installs_seat_flags() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.scratch/claude-spike/tmp/a2b-config-dir");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let config_dir = root.join("claude-config");
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("claude-config");
         std::fs::create_dir_all(&config_dir).unwrap();
         let args = parse_server(&[
             "--claude-config-dir",
             config_dir.to_str().unwrap(),
             "--claude-write-approved",
         ]);
-        validate_claude_seat_args(&args).expect("A2b seat flags");
-        assert!(args.claude_write_approved);
-        assert_eq!(
-            args.claude_config_dir.as_deref(),
-            Some(config_dir.as_path())
-        );
+        install_claude_subscription_seat(&args).expect("A2b seat flags");
+        let seat = gents::claude_subscription::process_seat().expect("seat installed");
+        assert_eq!(seat.config_dir, config_dir);
+        assert!(seat.write_approved);
     }
 
+    /// clap's `requires` enforces the orphan-flag rule: `--claude-write-approved`
+    /// (and `--claude-bin`) without `--claude-config-dir` is a parse error.
     #[test]
     fn claude_seat_orphan_flags_require_config_dir() {
-        let args = parse_server(&["--claude-write-approved"]);
-        let err = validate_claude_seat_args(&args).expect_err("orphan flags");
-        assert!(
-            err.to_string().contains("require --claude-config-dir"),
-            "{err}"
-        );
+        assert!(Cli::try_parse_from(["gents", "server", "--claude-write-approved"]).is_err());
+        assert!(Cli::try_parse_from(["gents", "server", "--claude-bin", "/usr/bin/claude"]).is_err());
     }
 
     #[test]
     fn install_claude_subscription_seat_from_server_flags() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.scratch/claude-spike/tmp/a2b-install-seat");
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let config_dir = root.join("claude-config");
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("claude-config");
         std::fs::create_dir_all(&config_dir).unwrap();
-        let fake = root.join("fake.sh");
-        std::fs::write(&fake, "#!/bin/sh\nprintf pong\n").unwrap();
-        let args = parse_server(&[
-            "--claude-config-dir",
-            config_dir.to_str().unwrap(),
-            "--claude-fake-completer",
-            fake.to_str().unwrap(),
-        ]);
+        let args = parse_server(&["--claude-config-dir", config_dir.to_str().unwrap()]);
         install_claude_subscription_seat(&args).expect("install seat");
         let seat = gents::claude_subscription::process_seat().expect("seat installed");
         assert_eq!(seat.config_dir, config_dir);
         assert!(!seat.write_approved);
-        assert_eq!(seat.fake_completer.as_deref(), Some(fake.as_path()));
     }
 }

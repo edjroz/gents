@@ -855,28 +855,15 @@ pub(crate) struct ServeArgs {
     pub(crate) claude_config_dir: Option<PathBuf>,
     #[arg(
         long,
-        help = "Working directory for Claude CLI child processes. Defaults beside --claude-config-dir when unset."
-    )]
-    pub(crate) claude_workdir: Option<PathBuf>,
-    #[arg(
-        long,
-        help = "Log directory for Claude completer logs. Defaults beside --claude-config-dir when unset."
-    )]
-    pub(crate) claude_log_dir: Option<PathBuf>,
-    #[arg(
-        long,
+        requires = "claude_config_dir",
         help = "Optional Claude CLI binary. Defaults to `claude` on PATH"
     )]
     pub(crate) claude_bin: Option<PathBuf>,
     #[arg(
         long,
-        help = "Optional fake completer for Claude wiring tests (A2b in-process; bypasses live write gate)"
-    )]
-    pub(crate) claude_fake_completer: Option<PathBuf>,
-    #[arg(
-        long,
         default_value_t = false,
-        help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it. Fake completer bypasses the gate."
+        requires = "claude_config_dir",
+        help = "Open the live Claude write gate for this process. Off by default — not a production default. With this flag the server may bill the Claude subscription on every ClaudeCliSubscription turn. Numbered human write approval is still required before setting it."
     )]
     pub(crate) claude_write_approved: bool,
     #[arg(

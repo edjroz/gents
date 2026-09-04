@@ -727,14 +727,7 @@ mod tests {
         let config_dir = std::env::temp_dir().join("gents-claude-probe-config");
         let _ = std::fs::create_dir_all(&config_dir);
         crate::claude_subscription::install_process_seat(Some(
-            crate::claude_subscription::ClaudeSeatConfig {
-                config_dir,
-                write_approved: false,
-                workdir: std::env::temp_dir(),
-                log_dir: None,
-                claude_bin,
-                fake_completer: None,
-            },
+            crate::claude_subscription::ClaudeSeatConfig::new(config_dir, false, Some(claude_bin)),
         ));
     }
 

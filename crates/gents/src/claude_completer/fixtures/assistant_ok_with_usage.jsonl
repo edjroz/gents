@@ -1,2 +1,0 @@
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"pong"}]}}
-{"type":"result","subtype":"success","result":"pong","is_error":false,"usage":{"input_tokens":2,"cache_creation_input_tokens":2774,"cache_read_input_tokens":0,"output_tokens":4}}

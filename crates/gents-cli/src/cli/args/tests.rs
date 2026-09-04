@@ -880,12 +880,8 @@ fn server_parses_a2b_claude_seat_flags() {
         "--claude-config-dir",
         "/tmp/claude-config",
         "--claude-write-approved",
-        "--claude-fake-completer",
-        "/tmp/fake-completer.sh",
-        "--claude-workdir",
-        "/tmp/claude-work",
-        "--claude-log-dir",
-        "/tmp/claude-logs",
+        "--claude-bin",
+        "/usr/local/bin/claude",
     ]);
     assert!(args.claude_write_approved);
     assert_eq!(
@@ -893,16 +889,8 @@ fn server_parses_a2b_claude_seat_flags() {
         Some(std::path::Path::new("/tmp/claude-config"))
     );
     assert_eq!(
-        args.claude_fake_completer.as_deref(),
-        Some(std::path::Path::new("/tmp/fake-completer.sh"))
-    );
-    assert_eq!(
-        args.claude_workdir.as_deref(),
-        Some(std::path::Path::new("/tmp/claude-work"))
-    );
-    assert_eq!(
-        args.claude_log_dir.as_deref(),
-        Some(std::path::Path::new("/tmp/claude-logs"))
+        args.claude_bin.as_deref(),
+        Some(std::path::Path::new("/usr/local/bin/claude"))
     );
 
     let seat_only = parse_server(&["--claude-config-dir", "/tmp/claude-config"]);
