@@ -2,7 +2,7 @@
    Built from the kit's conversation patterns over the desktop app's
    session projection: the timeline items are the bridge's own
    RenderedTimelineItem, rendered as they arrive. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -61,6 +61,7 @@ import { ToolBody } from "./tool-views";
 import { toolSummary } from "./tool-summary";
 import { sendStatus } from "@/lib/send-status";
 import { Popover, PopoverContent, PopoverTrigger } from "@gents/ui/components/popover";
+import { useExclusivePopover } from "@/hooks/useExclusivePopover";
 
 const stepStatus = (kind: string): ToolStepStatus =>
   kind === "completed" || kind === "failed" || kind === "cancelled" || kind === "error"
@@ -75,8 +76,81 @@ function formatTokens(value: number) {
   return `${amount >= 10 ? Math.round(amount) : amount.toFixed(1).replace(/\.0$/, "")}k`;
 }
 
+const TRANSCRIPT_FOLLOW_THRESHOLD_PX = 64;
+
+function transcriptViewport(owner: HTMLDivElement | null) {
+  return owner?.querySelector<HTMLElement>("[data-slot=scroll-area-viewport]") ?? null;
+}
+
+function transcriptIsNearTip(viewport: HTMLElement) {
+  return (
+    viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <
+    TRANSCRIPT_FOLLOW_THRESHOLD_PX
+  );
+}
+
+/**
+ * Preserve the reader's intent across transcript growth. Measuring whether the
+ * viewport is near the tip only after a large streamed chunk lands loses that
+ * intent: the new height itself can make a previously pinned viewport appear
+ * disengaged. The ref records intent on scroll and the layout effect consumes
+ * that prior observation when content grows.
+ */
+export function useTranscriptFollow(
+  ownerRef: RefObject<HTMLDivElement | null>,
+  sessionId: string | null,
+  contentSignal: string,
+) {
+  const shouldFollow = useRef(true);
+  const openedSession = useRef<string | null>(null);
+  const [atBottom, setAtBottom] = useState(true);
+
+  useLayoutEffect(() => {
+    if (!sessionId) {
+      openedSession.current = null;
+      shouldFollow.current = true;
+      setAtBottom(true);
+      return;
+    }
+    const viewport = transcriptViewport(ownerRef.current);
+    if (!viewport) return;
+
+    const sessionChanged = openedSession.current !== sessionId;
+    if (sessionChanged) {
+      openedSession.current = sessionId;
+      shouldFollow.current = true;
+    }
+    if (shouldFollow.current) {
+      viewport.scrollTop = viewport.scrollHeight;
+      setAtBottom(true);
+    }
+  }, [contentSignal, ownerRef, sessionId]);
+
+  useEffect(() => {
+    const viewport = transcriptViewport(ownerRef.current);
+    if (!viewport || !sessionId) return;
+    const observeIntent = () => {
+      const nearTip = transcriptIsNearTip(viewport);
+      shouldFollow.current = nearTip;
+      setAtBottom(nearTip);
+    };
+    observeIntent();
+    viewport.addEventListener("scroll", observeIntent, { passive: true });
+    return () => viewport.removeEventListener("scroll", observeIntent);
+  }, [ownerRef, sessionId]);
+
+  const toBottom = () => {
+    const viewport = transcriptViewport(ownerRef.current);
+    if (viewport) {
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    }
+  };
+
+  return { atBottom, toBottom };
+}
+
 function SessionContext({ context }: { context: DesktopSessionSnapshot["context"] }) {
-  const [open, setOpen] = useState(false);
+  const popover = useExclusivePopover();
   const used = Math.max(0, context.estimatedConversationTokens);
   const window = Math.max(
     1,
@@ -87,7 +161,7 @@ function SessionContext({ context }: { context: DesktopSessionSnapshot["context"
     context.lastRequest?.compactionThresholdTokens ?? context.compactionThresholdTokens,
   );
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={popover.open} onOpenChange={popover.onOpenChange}>
       <PopoverTrigger
         render={
           <Button variant="quiet" size="sm" data-testid="context-meter">
@@ -114,7 +188,7 @@ function SessionContext({ context }: { context: DesktopSessionSnapshot["context"
             variant="ghost"
             size="icon-xs"
             aria-label="Close context details"
-            onClick={() => setOpen(false)}
+            onClick={() => popover.onOpenChange(false)}
           >
             <X />
           </Button>
@@ -152,9 +226,16 @@ function useTraceOpen() {
   return [open, setOpen] as const;
 }
 
-function useBehaviorChoice(shell: Shell) {
+export function useBehaviorChoice(shell: Shell) {
   const behaviours = shell.selectedDeployment?.behaviors ?? [];
   const [picked, setPicked] = useState<string | null>(null);
+  const previousSessionId = useRef(shell.selectedSessionId);
+  useEffect(() => {
+    if (previousSessionId.current && !shell.selectedSessionId) {
+      setPicked(null);
+    }
+    previousSessionId.current = shell.selectedSessionId;
+  }, [shell.selectedSessionId]);
   const behaviorId =
     picked ??
     shell.mailboxCause?.behaviorId ??
@@ -179,39 +260,32 @@ export function SessionScreen({ shell }: { shell: Shell }) {
   /* the transcript column follows new content while the reader is near
      the bottom; a reader who has scrolled up is left where they are */
   const column = useRef<HTMLDivElement>(null);
-  const viewport = () =>
-    column.current?.querySelector<HTMLElement>("[data-slot=scroll-area-viewport]") ??
-    null;
-  const itemCount = session?.timelineItems.length ?? 0;
-  const liveLength = session?.activeResponseOverlay?.content?.length ?? 0;
-  const opened = useRef<string | null>(null);
-  useEffect(() => {
-    const el = viewport();
-    if (!el) return;
-    /* a session just opened: land at its end */
-    if (opened.current !== shell.selectedSessionId && itemCount > 0) {
-      opened.current = shell.selectedSessionId;
-      el.scrollTop = el.scrollHeight;
-      return;
-    }
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [itemCount, liveLength, shell.selectedSessionId]);
+  const viewport = () => transcriptViewport(column.current);
+  const transcriptContentSignal = (session?.timelineItems ?? [])
+    .map((item) => {
+      switch (item.kind) {
+        case "assistantMessage":
+        case "liveAssistant":
+          return `${item.itemKey}:${item.content?.length ?? 0}:${item.reasoning?.length ?? 0}`;
+        case "userMessage":
+        case "pendingUserTurn":
+          return `${item.itemKey}:${item.content.length}`;
+        case "toolGroup":
+          return `${item.itemKey}:${item.tools
+            .map(
+              (tool) =>
+                `${tool.itemKey}:${tool.statusKind}:${tool.partialOutputSeq ?? 0}:${tool.partialOutputTail?.length ?? 0}`,
+            )
+            .join(",")}`;
+      }
+    })
+    .join("|");
   /* away from the bottom, a button offers the way back; scrolling is the cue */
-  const [atBottom, setAtBottom] = useState(true);
-  useEffect(() => {
-    const el = viewport();
-    if (!el) return;
-    const check = () =>
-      setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-    check();
-    el.addEventListener("scroll", check, { passive: true });
-    return () => el.removeEventListener("scroll", check);
-  }, [shell.selectedSessionId, itemCount]);
-  const toBottom = () => {
-    const el = viewport();
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
+  const { atBottom, toBottom } = useTranscriptFollow(
+    column,
+    shell.selectedSessionId,
+    transcriptContentSignal,
+  );
   /* once the full header scrolls out, a condensed one sticks to the top */
   const headerEnd = useRef<HTMLDivElement>(null);
   const [condensed, setCondensed] = useState(false);

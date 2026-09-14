@@ -38,9 +38,10 @@ pub const CONFIGURE_BACKEND_TOOL_NAME: &str = "configure_backend";
 pub const CONFIGURE_MCP_SERVICE_TOOL_NAME: &str = "configure_mcp_service";
 pub const CONFIGURE_AUTOMATION_TOOL_NAME: &str = "configure_automation";
 pub const CONFIGURE_PERSONA_TOOL_NAME: &str = "configure_persona";
+pub const INSTALL_PACK_TOOL_NAME: &str = "install_pack";
 
 /// Every tool name of the family, for reserved-name checks and surfacing.
-pub const SELF_CONFIG_TOOL_NAMES: [&str; 8] = [
+pub const SELF_CONFIG_TOOL_NAMES: [&str; 9] = [
     GET_MY_CONFIG_TOOL_NAME,
     CONFIGURE_BEHAVIOR_TOOL_NAME,
     CONFIGURE_TOOLS_TOOL_NAME,
@@ -49,6 +50,7 @@ pub const SELF_CONFIG_TOOL_NAMES: [&str; 8] = [
     CONFIGURE_MCP_SERVICE_TOOL_NAME,
     CONFIGURE_AUTOMATION_TOOL_NAME,
     CONFIGURE_PERSONA_TOOL_NAME,
+    INSTALL_PACK_TOOL_NAME,
 ];
 
 /// The `configure_*` tool advertised for a category, if any.
@@ -155,11 +157,30 @@ fn behavior_request(core: &SelfConfigCore, patch: SelfConfigPatch) -> ApplyReque
     });
     request
 }
-fn tools_request(_core: &SelfConfigCore, patch: SelfConfigPatch) -> ApplyRequest<'static> {
+fn tools_request(
+    _core: &SelfConfigCore,
+    patch: SelfConfigPatch,
+    allow_pack_install: bool,
+) -> ApplyRequest<'static> {
     let mut request = anchored_request(SelfConfigTarget::Tools, "tools_id", patch);
-    request.validate = Box::new(|_, _, _, merged| {
+    request.validate = Box::new(move |_, _, _, merged| {
         let merged = merged.clone();
-        Box::pin(async move { validate_merged_selection(&merged) })
+        Box::pin(async move {
+            validate_merged_selection(&merged)?;
+            if !allow_pack_install {
+                let grants_pack_install = merged
+                    .get("self_config")
+                    .and_then(Value::as_object)
+                    .and_then(|config| config.get("enable_pack_install"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                anyhow::ensure!(
+                    !grants_pack_install,
+                    "pack installation is operator-managed and cannot be self-granted"
+                );
+            }
+            Ok(())
+        })
     });
     request.guard = Box::new(|_, merged| guard_selection_keeps_gate(merged));
     request
@@ -293,6 +314,7 @@ pub struct GetMyConfigTool {
     categories: BTreeSet<String>,
     no_lockout: bool,
     dry_run: bool,
+    allow_pack_install: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -415,7 +437,7 @@ impl Tool for GetMyConfigTool {
                         }
                         other => return Err(anyhow!("unknown behavior target {other:?}").into()),
                     },
-                    "tools" => tools_request(&self.core, patch),
+                    "tools" => tools_request(&self.core, patch, self.allow_pack_install),
                     "profile" => profile_target_request(preview.kind.as_deref(), patch)?,
                     "backend" => backend_request(patch),
                     "mcp_service" => {
@@ -500,6 +522,7 @@ impl Tool for ConfigureBehaviorTool {
 
 pub struct ConfigureToolsTool {
     core: SelfConfigCore,
+    allow_pack_install: bool,
 }
 
 impl Tool for ConfigureToolsTool {
@@ -526,7 +549,7 @@ impl Tool for ConfigureToolsTool {
         if args.target.is_some() {
             return Err(anyhow!("configure_tools has no target selector").into());
         }
-        let request = tools_request(&self.core, args.patch.into_patch());
+        let request = tools_request(&self.core, args.patch.into_patch(), self.allow_pack_install);
         let outcome = self.core.apply(request).await?;
         Ok(outcome_text(&outcome)?)
     }
@@ -719,6 +742,14 @@ pub struct ConfigurePersonaParams {
     pub action: String,
     #[serde(default)]
     pub persona_name: Option<String>,
+    /// User-facing summary for the working behavior and its context.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Complete operating instructions for the working behavior. Required
+    /// when creating from a permission preset; optional overrides a clone or
+    /// an existing behavior.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
     /// Exact behavior_id of the sibling persona (required for edit/disable).
     #[serde(default)]
     pub behavior_id: Option<String>,
@@ -732,6 +763,9 @@ pub struct ConfigurePersonaParams {
     /// Exact owner-scoped inference profile ID.
     #[serde(default)]
     pub profile_id: Option<String>,
+    /// Promote the applied persona to this principal's default behavior.
+    #[serde(default)]
+    pub make_default: bool,
 }
 
 /// How long [`ConfigurePersonaTool`] polls a freshly-authored
@@ -751,6 +785,7 @@ struct PersonaCatalogSnapshot {
 #[derive(Debug, Clone, serde::Serialize)]
 struct PersonaBehaviorSnapshot {
     enabled: bool,
+    protected: bool,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -770,11 +805,17 @@ struct PersonaRequestRowOut {
     #[serde(default)]
     persona_name: Option<String>,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
     root: Option<String>,
     #[serde(default)]
     preset: Option<String>,
     #[serde(default)]
     profile_id: Option<String>,
+    #[serde(default)]
+    make_default: Option<bool>,
     #[serde(default)]
     created_at: Option<String>,
     #[serde(default)]
@@ -804,9 +845,12 @@ async fn load_persona_request_row(
                 behavior_id
                 clone_from
                 persona_name
+                description
+                system_prompt
                 root
                 preset
                 profile_id
+                make_default
                 created_at
                 status
                 status_detail
@@ -877,6 +921,7 @@ async fn persona_list(node: &Arc<EmbeddedNode>, agent_did: &str) -> Result<Strin
                     behavior_id,
                     PersonaBehaviorSnapshot {
                         enabled: reference.enabled,
+                        protected: reference.protected,
                     },
                 )
             })
@@ -958,9 +1003,12 @@ async fn persona_mutate(
         behavior_id: resolved_behavior_id,
         clone_from,
         persona_name: args.persona_name.clone(),
+        description: args.description.clone(),
+        system_prompt: args.system_prompt.clone(),
         root: args.root.clone(),
         preset: args.preset.clone(),
         profile_id: resolved_profile_id,
+        make_default: args.make_default,
         created_at: now,
         local_signature: Vec::new(),
     };
@@ -986,7 +1034,7 @@ impl Tool for ConfigurePersonaTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: CONFIGURE_PERSONA_TOOL_NAME.to_string(),
-            description: "List, create, clone, edit, or disable sibling personas through signed PersonaConfigRequest admission. Choose an existing inference profile. Document IDs are exact and scoped to this principal. Clone copies source permissions; choosing a preset requests a new persona instead. Pending requests return their key for later inspection.".to_owned(),
+            description: "List, create, clone, edit, or disable sibling working behaviors through signed PersonaConfigRequest admission. Choose an existing inference profile. A preset-based create requires a complete system_prompt so the behavior is useful on its first request. A create/edit may atomically make the applied behavior this principal's default. Document IDs are exact and scoped to this principal. Clone copies source configuration unless an explicit description or system_prompt overrides it. Pending requests return their key for later inspection.".to_owned(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -997,6 +1045,14 @@ impl Tool for ConfigurePersonaTool {
                     "persona_name": {
                         "type": "string",
                         "description": "Display name for the persona (create/edit).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Concise user-facing purpose for the working behavior and context.",
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "Complete operating instructions. Required for a preset-based create; optional to override a clone or edit. Must describe the requested role, scope, tools, constraints, and verification expectations.",
                     },
                     "behavior_id": {
                         "type": "string",
@@ -1018,6 +1074,11 @@ impl Tool for ConfigurePersonaTool {
                         "type": "string",
                         "description": "Exact inference profile_id owned by this principal.",
                     },
+                    "make_default": {
+                        "type": "boolean",
+                        "description": "For create/edit, atomically promote the applied behavior to this principal's default. Must be false for disable.",
+                        "default": false,
+                    },
                 },
                 "required": ["action"],
             }),
@@ -1037,6 +1098,160 @@ impl Tool for ConfigurePersonaTool {
                 "unknown action {other:?}; use list|create|edit|clone|disable"
             ))),
         }
+    }
+}
+
+/// Install bundled graph packs through the canonical package and activation
+/// owners. The running principal is always the install owner; callers cannot
+/// select another DID, filesystem distribution, or control-plane endpoint.
+pub struct InstallPackTool {
+    core: SelfConfigCore,
+    node: Arc<EmbeddedNode>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPackParams {
+    /// Bundled graph pack name, such as `code_review`.
+    pub package: String,
+    /// Optional interpolation overrides declared by the selected pack. Setup's
+    /// current inference model and endpoint supply `*_MODEL`/`*_ENDPOINT` by
+    /// default, without changing process-global environment variables.
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+}
+
+impl InstallPackTool {
+    async fn install(&self, args: InstallPackParams) -> anyhow::Result<String> {
+        let package_name = args.package.trim();
+        anyhow::ensure!(!package_name.is_empty(), "pack name must not be blank");
+        anyhow::ensure!(
+            crate::pack::is_valid_pack_name(package_name),
+            "invalid pack name {package_name:?}; bundled pack names use snake_case"
+        );
+        anyhow::ensure!(
+            args.variables.len() <= 32,
+            "pack variables exceed the 32-entry limit"
+        );
+        for (name, value) in &args.variables {
+            anyhow::ensure!(
+                name != "GENTS_PACK_AGENT_DID"
+                    && !name.is_empty()
+                    && name.len() <= 128
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    }),
+                "invalid or protected pack variable name {name:?}"
+            );
+            anyhow::ensure!(value.len() <= 4096, "pack variable {name:?} is too large");
+        }
+
+        let effective = self
+            .core
+            .read_effective_config(&BTreeSet::new(), false, false)
+            .await?;
+        let model = effective
+            .pointer("/inference_profile/model_name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let endpoint = effective
+            .pointer("/documents/InferenceBackend/endpoint")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let variables = args.variables;
+        let environment = |name: &str| {
+            variables
+                .get(name)
+                .cloned()
+                .or_else(|| name.ends_with("_MODEL").then(|| model.clone()).flatten())
+                .or_else(|| {
+                    name.ends_with("_ENDPOINT")
+                        .then(|| endpoint.clone())
+                        .flatten()
+                })
+                .or_else(|| std::env::var(name).ok())
+        };
+
+        let access = crate::config_client::ConfigAccess::Local(self.node.clone());
+        let bindings = crate::graph_package::bundled_graph_package_install_bindings_for_owner(
+            &access,
+            package_name,
+            self.core.agent_did(),
+        )
+        .await?;
+        let distribution = crate::pack::resolve_pack(package_name)?;
+        let package = crate::graph_package::load_resolved_graph_package_with_environment(
+            &distribution,
+            &bindings,
+            &environment,
+        )?;
+        let external_dependencies = package.manifest.external_dependencies.clone();
+        let receipt = crate::graph_package::install_loaded_graph_package(
+            &access,
+            self.core.agent_did(),
+            &package,
+            &bindings,
+            None,
+        )
+        .await?;
+        let previous = crate::graph_pipeline::load_active_graph_plan_with_access(
+            &access,
+            self.core.agent_did(),
+            &receipt.graph_id,
+        )
+        .await?
+        .map(|plan| plan.digest);
+        let activation = crate::graph_pipeline::activate_graph_revision_with_access(
+            &access,
+            self.core.agent_did(),
+            &receipt.graph_id,
+            &receipt.revision_digest,
+            previous.as_deref(),
+        )
+        .await?;
+        Ok(serde_json::to_string_pretty(&json!({
+            "install": receipt,
+            "activation": activation,
+            "external_dependencies": external_dependencies,
+            "effect": "The bundled graph is installed and active. Installation did not start a graph run.",
+        }))?)
+    }
+}
+
+impl Tool for InstallPackTool {
+    const NAME: &'static str = INSTALL_PACK_TOOL_NAME;
+    type Error = SelfConfigError;
+    type Args = InstallPackParams;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Install and activate one known bundled graph pack for the current principal. Uses Setup's current inference model and endpoint for pack model/endpoint variables by default. This writes durable package configuration; it cannot install arbitrary paths, URLs, or another principal's pack. Installation does not run the graph.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "package": {
+                        "type": "string",
+                        "description": "Exact bundled graph pack name, for example code_review.",
+                    },
+                    "variables": {
+                        "type": "object",
+                        "description": "Optional pack interpolation overrides keyed by the exact declared environment-style variable name. Omit for the current Setup inference model/endpoint. Use only values the user requested.",
+                        "additionalProperties": {"type": "string"},
+                        "default": {},
+                    },
+                },
+                "required": ["package"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        self.install(args).await.map_err(SelfConfigError::from)
     }
 }
 
@@ -1069,11 +1284,21 @@ pub fn build_self_config_tools(
         categories: config.categories.clone(),
         no_lockout: config.no_lockout,
         dry_run: config.dry_run,
+        allow_pack_install: config.enable_pack_install,
     })];
+    if config.enable_pack_install {
+        tools.push(Box::new(InstallPackTool {
+            core: core.clone(),
+            node: node.clone(),
+        }));
+    }
     for category in &config.categories {
         match category.as_str() {
             "behavior" => tools.push(Box::new(ConfigureBehaviorTool { core: core.clone() })),
-            "tools" => tools.push(Box::new(ConfigureToolsTool { core: core.clone() })),
+            "tools" => tools.push(Box::new(ConfigureToolsTool {
+                core: core.clone(),
+                allow_pack_install: config.enable_pack_install,
+            })),
             "profile" => tools.push(Box::new(ConfigureProfileTool { core: core.clone() })),
             "backend" => tools.push(Box::new(ConfigureBackendTool { core: core.clone() })),
             "mcp_service" => tools.push(Box::new(ConfigureMcpServiceTool { core: core.clone() })),
@@ -1105,6 +1330,9 @@ pub fn self_config_tool_names(config: &SelfConfigToolConfig) -> Vec<String> {
         return Vec::new();
     }
     let mut names = vec![GET_MY_CONFIG_TOOL_NAME.to_string()];
+    if config.enable_pack_install {
+        names.push(INSTALL_PACK_TOOL_NAME.to_string());
+    }
     names.extend(
         config
             .categories

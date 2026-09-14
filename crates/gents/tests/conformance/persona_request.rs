@@ -35,7 +35,15 @@ fn catalog_with(
         known_agent_dids: BTreeSet::from(["did:key:agent".to_string()]),
         behaviors: behaviors
             .iter()
-            .map(|(id, enabled)| (id.to_string(), BehaviorRef { enabled: *enabled }))
+            .map(|(id, enabled)| {
+                (
+                    id.to_string(),
+                    BehaviorRef {
+                        enabled: *enabled,
+                        protected: false,
+                    },
+                )
+            })
             .collect::<BTreeMap<_, _>>(),
         ..Default::default()
     }
@@ -60,6 +68,8 @@ fn create_doc(op: PersonaOp) -> PersonaRequestDoc {
         op_raw: "create".to_string(),
         op: Some(op),
         persona_name: Some("Research Assistant".to_string()),
+        description: Some("Researches a focused question".to_string()),
+        system_prompt: Some("Research the question and cite evidence.".to_string()),
         root: None,
         preset: Some(persona_presets::PRESET_WRITE.to_string()),
         profile_id: Some("profile-1".to_string()),
@@ -120,6 +130,31 @@ fn admission_matrix_mirrors_lean_admits() {
         PersonaVerdict::Admit
     );
 
+    let mut promoted_disable = happy_disable.clone();
+    promoted_disable.make_default = true;
+    assert_eq!(
+        decide_persona_request(&promoted_disable, &cat),
+        PersonaVerdict::Reject("disable must not request make_default".to_string())
+    );
+
+    let mut protected_catalog = cat.clone();
+    protected_catalog
+        .behaviors
+        .get_mut("existing-enabled")
+        .expect("fixture behavior")
+        .protected = true;
+    let mut protected_edit = create_doc(PersonaOp::Edit);
+    protected_edit.op_raw = "edit".to_string();
+    protected_edit.behavior_id = Some("existing-enabled".to_string());
+    assert!(matches!(
+        decide_persona_request(&protected_edit, &protected_catalog),
+        PersonaVerdict::Reject(_)
+    ));
+    assert!(matches!(
+        decide_persona_request(&happy_disable, &protected_catalog),
+        PersonaVerdict::Reject(_)
+    ));
+
     // Reject branch (Lean `admits` = false → no candidate resolution): one
     // row per failing conjunct.
     let mut rejects: Vec<PersonaRequestDoc> = Vec::new();
@@ -156,6 +191,10 @@ fn admission_matrix_mirrors_lean_admits() {
     let mut bad_name = create_doc(PersonaOp::Create { clone_from: None });
     bad_name.persona_name = Some(String::new());
     rejects.push(bad_name);
+    // createPromptOk: a preset-based create must be useful on its first turn.
+    let mut missing_prompt = create_doc(PersonaOp::Create { clone_from: None });
+    missing_prompt.system_prompt = None;
+    rejects.push(missing_prompt);
     // createModeOk: clone must omit preset.
     let mut clone_with_preset = create_doc(PersonaOp::Create {
         clone_from: Some("existing-enabled".to_string()),

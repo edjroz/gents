@@ -77,9 +77,12 @@ structure Request where
   localSigner : String
   localSignatureValid : Bool
   name : String
+  description : String
+  systemPrompt : String
   root : String
   preset : String
   profile : String
+  makeDefault : Bool
   cloneFrom : String
   target : String
   deriving DecidableEq, Repr
@@ -88,6 +91,7 @@ structure Request where
 and ownership are validated by resolution of the compiled candidate below. -/
 structure BehaviorCatalog where
   behaviors : Finset (String × Bool)
+  protectedIds : Finset String
   deriving DecidableEq
 
 -- These admission conjuncts are `abbrev` (reducible) so the `Decidable`
@@ -98,6 +102,12 @@ abbrev presetKnown (r : Request) : Prop :=
   r.preset = "readonly" ∨ r.preset = "write"
 
 abbrev nameOk (r : Request) : Prop := r.name ≠ ""
+
+/-- A preset-based behavior is authored from scratch and must carry useful
+operating instructions. A clone may inherit its source prompt when this field
+is empty. -/
+abbrev createPromptOk (r : Request) : Prop :=
+  r.cloneFrom ≠ "" ∨ r.systemPrompt.trim ≠ ""
 
 /-- An empty root selects the runtime cwd; a non-empty composer root must
 be published. Existence and authority are checked by the host execution owner. -/
@@ -128,6 +138,13 @@ abbrev createModeOk (st : BehaviorCatalog) (r : Request) : Prop :=
 `disable` `contains_key` check. -/
 abbrev behaviorPresent (st : BehaviorCatalog) (id : String) : Prop :=
   (id, true) ∈ st.behaviors ∨ (id, false) ∈ st.behaviors
+
+/-- Product-owned configurators may be cloned but cannot be edited or disabled
+through their own sibling-persona tool. This keeps a recovery/configuration
+behavior available while allowing newly created working behaviors to become
+the principal default. -/
+abbrev behaviorMutable (st : BehaviorCatalog) (id : String) : Prop :=
+  id ∉ st.protectedIds
 
 /-- Edit may preserve the current context (empty preset) or name a known
 preset. Optional context/tools references are resolved by the common loader. -/
@@ -179,12 +196,12 @@ instance (cat : Catalog) (r : Request) : Decidable (authorizationOk cat r) := by
 def opOk (cat : Catalog) (st : BehaviorCatalog) (r : Request) : Prop :=
   match r.op with
   | Op.create =>
-      nameOk r ∧ rootOk cat r ∧ profileOk cat r ∧ createModeOk st r
+      nameOk r ∧ createPromptOk r ∧ rootOk cat r ∧ profileOk cat r ∧ createModeOk st r
   | Op.edit =>
-      behaviorPresent st r.target ∧ nameOk r ∧ rootOk cat r ∧
+      behaviorPresent st r.target ∧ behaviorMutable st r.target ∧ nameOk r ∧ rootOk cat r ∧
         profileOk cat r ∧ editPresetOk r
   | Op.disable =>
-      behaviorPresent st r.target
+      behaviorPresent st r.target ∧ behaviorMutable st r.target ∧ r.makeDefault = false
 
 instance (cat : Catalog) (st : BehaviorCatalog) (r : Request) : Decidable (opOk cat st r) := by
   unfold opOk
@@ -205,6 +222,24 @@ def targetBehaviorId (r : Request) : String :=
   match r.op with
   | .create => r.key
   | .edit | .disable => r.target
+
+/-- Default selection is part of the same admitted create/edit publication.
+It never rewrites the configurator/source behavior; it only points the
+principal at the separately materialized target. -/
+def defaultBehaviorAfter (preDefault appliedBehavior : String) (r : Request) : String :=
+  if r.op ≠ .disable ∧ r.makeDefault = true then appliedBehavior else preDefault
+
+theorem requested_promotion_selects_applied_behavior
+    (preDefault appliedBehavior : String) (r : Request)
+    (hop : r.op ≠ .disable) (hdefault : r.makeDefault = true) :
+    defaultBehaviorAfter preDefault appliedBehavior r = appliedBehavior := by
+  simp [defaultBehaviorAfter, hop, hdefault]
+
+theorem omitted_promotion_keeps_existing_default
+    (preDefault appliedBehavior : String) (r : Request)
+    (hdefault : r.makeDefault = false) :
+    defaultBehaviorAfter preDefault appliedBehavior r = preDefault := by
+  simp [defaultBehaviorAfter, hdefault]
 
 /-- A create/edit result must resolve as one context-plus-inference configuration.
 The candidate is supplied by the common authoring loader, not reconstructed from
@@ -269,6 +304,23 @@ theorem blank_profile_rejected (cat : Catalog) (st : BehaviorCatalog) (r : Reque
     ¬ admits cat st r := by
   intro hadm
   exact (admitted_profile cat st r hadm hop).1 hblank
+
+/-- An admitted preset-based create cannot materialize an instructionless
+working behavior. Clones retain the source prompt unless explicitly
+overridden by the authoring loader. -/
+theorem admitted_preset_create_has_prompt (cat : Catalog) (st : BehaviorCatalog) (r : Request)
+    (hadm : admits cat st r) (hop : r.op = .create) (hclone : r.cloneFrom = "") :
+    r.systemPrompt.trim ≠ "" := by
+  have hopOk := hadm.2.2
+  simp [opOk, createPromptOk, hop, hclone] at hopOk
+  exact hopOk.2.1
+
+theorem protected_edit_or_disable_rejected (cat : Catalog) (st : BehaviorCatalog) (r : Request)
+    (hop : r.op = .edit ∨ r.op = .disable) (hprotected : r.target ∈ st.protectedIds) :
+    ¬ admits cat st r := by
+  intro hadm
+  have hopOk := hadm.2.2
+  rcases hop with h | h <;> simp [opOk, behaviorMutable, h, hprotected] at hopOk
 
 end PersonaRequest
 end PeerRegistryDiscovery
