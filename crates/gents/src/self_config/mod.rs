@@ -10,7 +10,7 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-pub use ops::{PatchOutcome, SelfConfigCore, EFFECT_TIMING_NOTE};
+pub use ops::{apply_tool_grant_selection, PatchOutcome, SelfConfigCore, EFFECT_TIMING_NOTE};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -785,6 +785,10 @@ pub struct ConfigurePersonaParams {
     /// Promote the applied behavior to this principal's default behavior.
     #[serde(default)]
     pub make_default: bool,
+    #[serde(default)]
+    pub enable_lsp: Option<bool>,
+    #[serde(default)]
+    pub enable_graph_tools: Option<bool>,
 }
 
 /// How long [`ConfigurePersonaTool`] polls a freshly-authored
@@ -1373,13 +1377,13 @@ impl Tool for ConfigurePersonaTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: CONFIGURE_BEHAVIORS_TOOL_NAME.to_string(),
-            description: "Preview, list, inspect, create, clone, edit, or disable this principal's canonical AgentBehavior configurations. Mutations reuse the signed paired-client admission/materialization owner internally and return runtime-resolved effective state. Choose an existing inference profile. A preset-based create requires a complete system_prompt. Setup is protected. Clone copies source configuration unless explicitly overridden. Changes affect newly dispatched work after reconciliation; test a created behavior in a new session.".to_owned(),
+            description: "Preview, list, inspect, create, clone, edit, or disable this principal's canonical behaviors through the signed command owner. Choose an existing profile and a complete system_prompt for a preset-based create. Then use the separate configure_tools action with an existing behavior_id to select LSP/native graph capabilities through the canonical config patch owner. Creation and tool selection are distinct commits; retry only the failed operation. Setup and shared tool references are protected. Inspect configured grants and test a new request after reconciliation before claiming readiness.".to_owned(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "inspect", "preview", "create", "edit", "clone", "disable"],
+                        "enum": ["list", "inspect", "preview", "create", "edit", "clone", "disable", "configure_tools"],
                     },
                     "operation": {
                         "type": "string",
@@ -1423,6 +1427,14 @@ impl Tool for ConfigurePersonaTool {
                         "description": "For create/edit, atomically promote the applied behavior to this principal's default. Must be false for disable.",
                         "default": false,
                     },
+                    "enable_lsp": {
+                        "type": "boolean",
+                        "description": "Only for action configure_tools on an existing sibling. Select LSP in canonical Tools; omit to preserve, false disables. This is a separate committed operation after create/clone/edit, not an atomic creation option. Test the server before claiming readiness."
+                    },
+                    "enable_graph_tools": {
+                        "type": "boolean",
+                        "description": "Only for action configure_tools on an existing sibling. Select native list_graphs/run_graph/get_graph_run/get_graph_result/cancel_graph_run on this node/principal, without pack installation or self-configuration. Omit to preserve; false disables. Graph caller admission still applies."
+                    },
                 },
                 "required": ["action"],
             }),
@@ -1430,7 +1442,49 @@ impl Tool for ConfigurePersonaTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        if args.action != "configure_tools"
+            && (args.enable_lsp.is_some() || args.enable_graph_tools.is_some())
+        {
+            return Err(anyhow!("tool selections require the separate configure_tools action with an existing behavior_id; create/clone/edit remains a signed atomic behavior command").into());
+        }
         match args.action.as_str() {
+            "configure_tools" => {
+                let behavior_id = args
+                    .behavior_id
+                    .as_deref()
+                    .context("configure_tools requires behavior_id")?;
+                let core = SelfConfigCore::new(
+                    self.node.clone(),
+                    self.agent_did.clone(),
+                    behavior_id.into(),
+                )?
+                .with_process_ceiling(self.process_ceiling.clone());
+                let outcome = core
+                    .select_sibling_tools(args.enable_lsp, args.enable_graph_tools)
+                    .await?;
+                let effective = core
+                    .read_effective_config(&BTreeSet::new(), false, false)
+                    .await?;
+                for (requested, name) in [
+                    (args.enable_lsp, "lsp"),
+                    (args.enable_graph_tools, "native_graph_tools"),
+                ] {
+                    if let Some(requested) = requested {
+                        if effective["tool_grants"]["configured"][name].as_bool() != Some(requested)
+                        {
+                            return Err(
+                                anyhow!("committed tool selection did not verify {name}").into()
+                            );
+                        }
+                    }
+                }
+                Ok(serde_json::to_string_pretty(&json!({
+                    "outcome": outcome, "behavior_id": behavior_id,
+                    "requested": {"enable_lsp": args.enable_lsp, "enable_graph_tools": args.enable_graph_tools},
+                    "effective_config": effective,
+                    "effect": "Tool selection committed separately from behavior creation. Existing IDs and prompt are unchanged; test a new request after reconciliation.",
+                })).context("serialize sibling tool selection")?)
+            }
             "list" => Ok(persona_list(&self.node, &self.agent_did, &self.process_ceiling).await?),
             "inspect" => {
                 let behavior_id = args
@@ -2032,7 +2086,7 @@ pub fn build_self_config_tools(
     identity: Option<Arc<dyn AgentIdentity>>,
     config: &SelfConfigToolConfig,
 ) -> Vec<Box<dyn ToolDyn>> {
-    if !config.enabled {
+    if !config.enabled && !config.enable_graph_tools {
         return Vec::new();
     }
     let core =
@@ -2050,18 +2104,8 @@ pub fn build_self_config_tools(
             }
         };
 
-    let mut tools: Vec<Box<dyn ToolDyn>> = vec![Box::new(GetMyConfigTool {
-        core: core.clone(),
-        categories: config.categories.clone(),
-        no_lockout: config.no_lockout,
-        dry_run: config.dry_run,
-        allow_pack_install: config.enable_pack_install,
-    })];
-    if config.enable_pack_install {
-        tools.push(Box::new(InstallPackTool {
-            core: core.clone(),
-            node: node.clone(),
-        }));
+    let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
+    if config.enable_graph_tools {
         tools.push(Box::new(ListGraphsTool {
             core: core.clone(),
             node: node.clone(),
@@ -2079,6 +2123,22 @@ pub fn build_self_config_tools(
             node: node.clone(),
         }));
         tools.push(Box::new(CancelGraphRunTool {
+            core: core.clone(),
+            node: node.clone(),
+        }));
+    }
+    if !config.enabled {
+        return tools;
+    }
+    tools.push(Box::new(GetMyConfigTool {
+        core: core.clone(),
+        categories: config.categories.clone(),
+        no_lockout: config.no_lockout,
+        dry_run: config.dry_run,
+        allow_pack_install: config.enable_pack_install,
+    }));
+    if config.enable_pack_install {
+        tools.push(Box::new(InstallPackTool {
             core: core.clone(),
             node: node.clone(),
         }));
@@ -2118,12 +2178,8 @@ pub fn build_self_config_tools(
 
 /// Advertised tool names for a resolved self-config surface.
 pub fn self_config_tool_names(config: &SelfConfigToolConfig) -> Vec<String> {
-    if !config.enabled {
-        return Vec::new();
-    }
-    let mut names = vec![GET_MY_CONFIG_TOOL_NAME.to_string()];
-    if config.enable_pack_install {
-        names.push(INSTALL_PACK_TOOL_NAME.to_string());
+    let mut names = Vec::new();
+    if config.enable_graph_tools {
         names.extend([
             LIST_GRAPHS_TOOL_NAME.to_string(),
             RUN_GRAPH_TOOL_NAME.to_string(),
@@ -2131,6 +2187,13 @@ pub fn self_config_tool_names(config: &SelfConfigToolConfig) -> Vec<String> {
             GET_GRAPH_RESULT_TOOL_NAME.to_string(),
             CANCEL_GRAPH_RUN_TOOL_NAME.to_string(),
         ]);
+    }
+    if !config.enabled {
+        return names;
+    }
+    names.push(GET_MY_CONFIG_TOOL_NAME.to_string());
+    if config.enable_pack_install {
+        names.push(INSTALL_PACK_TOOL_NAME.to_string());
     }
     names.extend(
         config

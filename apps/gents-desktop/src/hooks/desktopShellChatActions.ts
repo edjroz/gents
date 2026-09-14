@@ -1,4 +1,8 @@
 import type { Dispatch, FormEvent, MutableRefObject, SetStateAction } from "react";
+import {
+  selectedBehaviorReadinessDecision,
+  type ChatSendResult,
+} from "@source-inc/gents-desktop-client";
 
 import type {
   ChatShellProjection,
@@ -61,18 +65,26 @@ export function createDesktopShellChatActions({
   shellProjection,
   retryShellProjection,
 }: ChatActionParams) {
-  async function submitContent(content: string): Promise<boolean> {
+  async function submitContent(
+    content: string,
+    behaviorId?: string | null,
+  ): Promise<ChatSendResult | null> {
     const deployment = selectedDeployment ?? deployments[0] ?? null;
     if (!deployment || !content.trim()) {
-      return false;
+      return null;
     }
 
     if (shellProjection.nonEmptyContentSendStatus.kind !== "ready") {
       setError(shellProjection.nonEmptyContentSendStatus.hint);
-      return false;
+      return null;
     }
-    if (behaviorReadiness.kind !== "ready") {
-      return false;
+    const admission =
+      behaviorId === undefined
+        ? behaviorReadiness
+        : selectedBehaviorReadinessDecision(deployment, behaviorId);
+    if (admission.kind !== "ready") {
+      setError("The selected behavior is unavailable");
+      return null;
     }
 
     setLocalWorkflow({
@@ -85,7 +97,7 @@ export function createDesktopShellChatActions({
     try {
       const result = await api.sendChatMessage({
         agentDid: deployment.agentDid,
-        behaviorId: behaviorReadiness.behaviorId,
+        behaviorId: admission.behaviorId,
         sessionId: selectedSessionId,
         content,
         causedBySourceDocId: pendingMailboxCauseId,
@@ -107,11 +119,11 @@ export function createDesktopShellChatActions({
         sessionId: result.sessionId,
         requestId: result.requestId,
       });
-      return true;
+      return result;
     } catch (err) {
       setLocalWorkflow({ kind: "ready" });
       setError(String(err));
-      return false;
+      return null;
     } finally {
       setSending(false);
     }
@@ -219,6 +231,7 @@ export function createDesktopShellChatActions({
   }
 
   return {
+    submitContent,
     onRenameSessionTitle,
     onRetryMessage,
     onSelectSession,

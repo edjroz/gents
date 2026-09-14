@@ -87,6 +87,42 @@ structure Request where
   target : String
   deriving DecidableEq, Repr
 
+/-- An explicit sibling-tools operation refines the canonical tool document inside
+the existing self-config patch transaction, separately from signed creation.
+Omission preserves current selections; explicit false revokes.
+Selections never imply self-configuration or pack install.
+Host execution and graph caller admission still use their existing owners. -/
+def selectedToolFlag (requested : Option Bool) (existing : Bool) : Bool :=
+  requested.getD existing
+
+theorem omitted_tool_selection_preserves (existing : Bool) :
+    selectedToolFlag none existing = existing := rfl
+
+theorem explicit_tool_selection_wins (requested existing : Bool) :
+    selectedToolFlag (some requested) existing = requested := rfl
+
+/-- Observations are supplied by the existing identity-scoped config transaction.
+The focused operation refuses protected or shared targets rather than mutating
+other behaviors or inventing another materialization owner. -/
+def siblingToolsAllowed (ownerMatches isProtected sharedContext sharedTools : Bool) : Bool :=
+  ownerMatches && !isProtected && !sharedContext && !sharedTools
+
+theorem protected_sibling_tools_denied (owner sharedContext sharedTools : Bool) :
+    siblingToolsAllowed owner true sharedContext sharedTools = false := by
+  cases owner <;> simp [siblingToolsAllowed]
+
+theorem unshared_owned_sibling_tools_allowed :
+    siblingToolsAllowed true false false false = true := rfl
+
+/-- Native graph tool presentation is an independent opt-in. Presentation is
+not graph caller admission and does not grant installation or configuration. -/
+def graphToolPresented (requested : Bool) (_selfConfig _packInstall : Bool) : Bool :=
+  requested
+
+theorem graph_tools_without_configuration : graphToolPresented true false false = true := rfl
+theorem configuration_does_not_grant_graph_tools :
+    graphToolPresented false true true = false := rfl
+
 /-- Read-only enabled/id projection for command target checks. Canonical references
 and ownership are validated by resolution of the compiled candidate below. -/
 structure BehaviorCatalog where
