@@ -1356,6 +1356,51 @@ export function createDesktopUiHarness(
           ),
           ...(request.document.inference_profiles ?? []),
         ],
+        inferenceBackends: [
+          ...deployment.inferenceBackends.filter(
+            (backend) =>
+              !request.document.inference_backends?.some(
+                (candidate) => candidate.backend_id === backend.backendId,
+              ),
+          ),
+          ...(request.document.inference_backends ?? []).map((backend) => ({
+            backendId: backend.backend_id,
+            name: backend.name,
+            providerKind: backend.provider_kind,
+            openaiWireApi: backend.openai_wire_api ?? null,
+            endpoint: backend.endpoint,
+            authKind: backend.auth.kind,
+            connectTimeoutSecs: backend.connect_timeout_secs ?? null,
+            discoveryTimeoutSecs: backend.discovery_timeout_secs ?? null,
+            apiKeyConfigured: backend.auth.kind === "api_key",
+            apiKeyEnvVar:
+              backend.auth.kind === "environment" ? backend.auth.variable : null,
+            maxConcurrent: backend.max_concurrent ?? null,
+            maxQueueDepth: backend.max_queue_depth ?? null,
+            enabled: backend.enabled ?? true,
+            tags: backend.tags ?? [],
+            models: [],
+            probeStatus: "healthy",
+          })),
+        ],
+        inferenceSampling: [
+          ...deployment.inferenceSampling.filter(
+            (sampling) =>
+              !request.document.inference_sampling?.some(
+                (candidate) => candidate.sampling_id === sampling.sampling_id,
+              ),
+          ),
+          ...(request.document.inference_sampling ?? []),
+        ],
+        inferenceExecution: [
+          ...deployment.inferenceExecution.filter(
+            (execution) =>
+              !request.document.inference_execution?.some(
+                (candidate) => candidate.execution_id === execution.execution_id,
+              ),
+          ),
+          ...(request.document.inference_execution ?? []),
+        ],
         toolServiceRegistries: [
           ...deployment.toolServiceRegistries.filter(
             (service) =>
@@ -1897,6 +1942,173 @@ export function createDesktopUiHarness(
             : deployment.eventSources.map((row, i) => (i === index ? next : row)),
       };
       return snapshot();
+    },
+    async getInferenceSetupCatalog() {
+      return {
+        contractVersion: 1,
+        defaultsVersion: "2026-09-14.1",
+        providers: [
+          {
+            id: "openai" as const,
+            displayName: "OpenAI",
+            description: "Sign in with ChatGPT or use an OpenAI API key.",
+            authMethods: ["chat_gpt_oauth" as const, "api_key" as const],
+            authOptions: [
+              {
+                method: "chat_gpt_oauth" as const,
+                displayName: "ChatGPT sign-in",
+                defaultEndpoint: "https://chatgpt.com/backend-api/codex",
+              },
+              {
+                method: "api_key" as const,
+                displayName: "OpenAI API key",
+                defaultEndpoint: "https://api.openai.com/v1",
+              },
+            ],
+            defaultAuthMethod: "chat_gpt_oauth" as const,
+            defaultEndpoint: "https://chatgpt.com/backend-api/codex",
+          },
+          {
+            id: "anthropic" as const,
+            displayName: "Anthropic",
+            description: "Use a Claude Pro or Max subscription.",
+            authMethods: ["claude_oauth" as const],
+            authOptions: [
+              {
+                method: "claude_oauth" as const,
+                displayName: "Claude sign-in",
+                defaultEndpoint: "claude-cli://subscription",
+              },
+            ],
+            defaultAuthMethod: "claude_oauth" as const,
+            defaultEndpoint: "claude-cli://subscription",
+          },
+          {
+            id: "grok" as const,
+            displayName: "Grok",
+            description: "Use SuperGrok or an eligible X Premium+ subscription.",
+            authMethods: ["grok_oauth" as const],
+            authOptions: [
+              {
+                method: "grok_oauth" as const,
+                displayName: "Grok sign-in",
+                defaultEndpoint: "https://cli-chat-proxy.grok.com/v1",
+              },
+            ],
+            defaultAuthMethod: "grok_oauth" as const,
+            defaultEndpoint: "https://cli-chat-proxy.grok.com/v1",
+          },
+          {
+            id: "local" as const,
+            displayName: "Local",
+            description: "OpenAI-compatible local server.",
+            authMethods: ["optional_api_key" as const],
+            authOptions: [
+              {
+                method: "optional_api_key" as const,
+                displayName: "Endpoint + optional key",
+                defaultEndpoint: "http://workstation-1:8000/v1",
+              },
+            ],
+            defaultAuthMethod: "optional_api_key" as const,
+            defaultEndpoint: "http://workstation-1:8000/v1",
+          },
+          {
+            id: "openrouter" as const,
+            displayName: "OpenRouter",
+            description: "Use one API key for OpenRouter's advertised models.",
+            authMethods: ["api_key" as const],
+            authOptions: [
+              {
+                method: "api_key" as const,
+                displayName: "OpenRouter API key",
+                defaultEndpoint: "https://openrouter.ai/api/v1",
+              },
+            ],
+            defaultAuthMethod: "api_key" as const,
+            defaultEndpoint: "https://openrouter.ai/api/v1",
+          },
+        ],
+      };
+    },
+    async discoverInferenceModels(request) {
+      const modelName =
+        request.provider === "local" ? "GLM-5.3-Flash-NVFP4" : "gpt-5.5";
+      const recommendation = await adapter.getInferenceModelRecommendation({
+        provider: request.provider,
+        authMethod: request.authMethod,
+        modelName,
+        displayName: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        reasoningEfforts: null,
+      });
+      return {
+        requestKey: request.requestKey,
+        contractVersion: 1,
+        defaultsVersion: "2026-09-14.1",
+        requestedEndpoint: request.endpoint,
+        effectiveEndpoint: request.endpoint,
+        backendName: request.provider === "local" ? "Local server" : "ChatGPT",
+        providerKind:
+          request.provider === "local" ? "OpenAiCompatible" : "ChatGptCodex",
+        openaiWireApi: request.provider === "local" ? "chat_completions" : "responses",
+        reachable: true,
+        models: [
+          {
+            advertised: {
+              model_name: modelName,
+              display_name: null,
+              context_window: null,
+              max_output_tokens: null,
+              reasoning_efforts: null,
+            },
+            recommendation,
+          },
+        ],
+        failure: null,
+        manualEntryAllowed: false,
+      };
+    },
+    async getInferenceModelRecommendation(request) {
+      const fixture = request.modelName === "GLM-5.3-Flash-NVFP4";
+      return {
+        defaultsVersion: "2026-09-14.1",
+        summary: fixture
+          ? "Gents recommends temperature 1 and top-p 0.95 for this workstation model."
+          : "Gents recommends medium reasoning.",
+        contextWindow: null,
+        maxOutputTokens: null,
+        temperature: fixture ? { recommended: 1, min: 0, max: 2, step: 0.05 } : null,
+        topP: fixture ? { recommended: 0.95, min: 0, max: 1, step: 0.05 } : null,
+        reasoningEffort: fixture
+          ? null
+          : { recommended: "medium" as const, choices: ["low", "medium", "high"] },
+        maxConcurrent: { recommended: 1, min: 1, max: null },
+      };
+    },
+    async getInferenceBackendRecommendation(request) {
+      const selection =
+        request.providerKind === "ClaudeCliSubscription"
+          ? { provider: "anthropic" as const, authMethod: "claude_oauth" as const }
+          : request.providerKind === "XaiGrokOAuth"
+            ? { provider: "grok" as const, authMethod: "grok_oauth" as const }
+            : request.providerKind === "ChatGptCodex"
+              ? { provider: "openai" as const, authMethod: "chat_gpt_oauth" as const }
+              : request.providerKind === "OpenRouter"
+                ? { provider: "openrouter" as const, authMethod: "api_key" as const }
+                : {
+                    provider: "local" as const,
+                    authMethod: "optional_api_key" as const,
+                  };
+      return adapter.getInferenceModelRecommendation({
+        ...selection,
+        modelName: request.modelName,
+        displayName: request.displayName,
+        contextWindow: request.contextWindow,
+        maxOutputTokens: request.maxOutputTokens,
+        reasoningEfforts: request.reasoningEfforts,
+      });
     },
     async probeInferenceEndpoint() {
       return {

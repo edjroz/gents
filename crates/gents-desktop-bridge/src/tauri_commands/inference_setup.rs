@@ -1,16 +1,18 @@
 //! First-party inference onboarding commands for the desktop app.
 //!
-//! These back the guided "set up inference" wizard: a local-server probe that
-//! mirrors the CLI init picker's `GET {base}/models` auto-detection, and a
-//! first-party ChatGPT/Codex OAuth login that replicates `gents codex-login`
-//! against the desktop client's embedded node. The backend documents for the
-//! OpenAI / local / custom options are written through the existing
-//! `desktop_backend_save` command; this module owns only the two pieces that
-//! have no equivalent yet.
+//! Rust owns the versioned provider catalog, canonical connection mapping,
+//! advertised-model discovery, and Gents recommendations. OAuth credentials
+//! remain agent-scoped documents and never cross this bridge unredacted. The UI
+//! commits the chosen canonical components through the existing atomic operator
+//! configuration command.
 
 use std::time::Duration;
 
 use gents::chatgpt_codex::normalize_provider;
+use gents::inference_setup::{
+    InferenceAuthMethod, InferenceModelOption, InferenceModelRecommendation, InferenceProviderId,
+    InferenceSetupCatalog,
+};
 use gents::oauth_credential::{list_oauth_credentials, OAuthCredential};
 use gents_chatgpt_login::{run_login_server, LoginOptions};
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,247 @@ use crate::types::ClientUpdateEvent;
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 const CODEX_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InferenceDiscoveryFailure {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InferenceDiscoveryRequest {
+    pub request_key: String,
+    pub agent_did: String,
+    pub provider: InferenceProviderId,
+    pub auth_method: InferenceAuthMethod,
+    pub endpoint: String,
+    /// Ephemeral connection input. It is consumed for this request and is
+    /// never reflected into a response or desktop snapshot.
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InferenceDiscoveryResult {
+    pub request_key: String,
+    pub contract_version: u32,
+    pub defaults_version: String,
+    pub requested_endpoint: String,
+    pub effective_endpoint: String,
+    pub backend_name: String,
+    pub provider_kind: gents::BackendProviderKind,
+    pub openai_wire_api: Option<gents::OpenAiWireApi>,
+    pub reachable: bool,
+    pub models: Vec<InferenceModelOption>,
+    pub failure: Option<InferenceDiscoveryFailure>,
+    pub manual_entry_allowed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InferenceRecommendationRequest {
+    pub provider: InferenceProviderId,
+    pub auth_method: InferenceAuthMethod,
+    pub model_name: String,
+    pub display_name: Option<String>,
+    pub context_window: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    pub reasoning_efforts: Option<Vec<gents::config::ReasoningEffort>>,
+}
+
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InferenceBackendRecommendationRequest {
+    pub provider_kind: gents::BackendProviderKind,
+    pub endpoint: String,
+    pub model_name: String,
+    pub display_name: Option<String>,
+    pub context_window: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    pub reasoning_efforts: Option<Vec<gents::config::ReasoningEffort>>,
+}
+
+#[tauri::command]
+pub(crate) fn desktop_inference_setup_catalog() -> InferenceSetupCatalog {
+    gents::inference_setup::inference_setup_catalog()
+}
+
+#[tauri::command]
+pub(crate) fn desktop_inference_model_recommendation(
+    request: InferenceRecommendationRequest,
+) -> Result<InferenceModelRecommendation, BridgeError> {
+    let model_name = request.model_name.trim();
+    if model_name.is_empty() {
+        return Err(BridgeError::untyped("model name is required"));
+    }
+    gents::inference_setup::recommendation_for_model(
+        request.provider,
+        request.auth_method,
+        &gents::document_config::AdvertisedModel {
+            model_name: model_name.to_string(),
+            display_name: request.display_name,
+            context_window: request.context_window,
+            max_output_tokens: request.max_output_tokens,
+            reasoning_efforts: request.reasoning_efforts,
+        },
+    )
+    .map_err(|error| BridgeError::untyped(error.to_string()))
+}
+
+#[tauri::command]
+pub(crate) fn desktop_inference_backend_recommendation(
+    request: InferenceBackendRecommendationRequest,
+) -> Result<InferenceModelRecommendation, BridgeError> {
+    let (provider, auth_method) = gents::inference_setup::provider_selection_for_backend(
+        request.provider_kind,
+        &request.endpoint,
+    );
+    desktop_inference_model_recommendation(InferenceRecommendationRequest {
+        provider,
+        auth_method,
+        model_name: request.model_name,
+        display_name: request.display_name,
+        context_window: request.context_window,
+        max_output_tokens: request.max_output_tokens,
+        reasoning_efforts: request.reasoning_efforts,
+    })
+}
+
+fn classify_discovery_failure(error: &anyhow::Error) -> (&'static str, bool, bool) {
+    let http_error = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<gents::backend_provider::ModelDiscoveryHttpError>());
+    let is_decode = error
+        .chain()
+        .any(|cause| cause.downcast_ref::<serde_json::Error>().is_some());
+    if let Some(error) = http_error {
+        if error.is_auth() {
+            ("authentication", true, false)
+        } else {
+            // A non-auth HTTP response proves the configured host is
+            // reachable even when it does not expose a model catalog.
+            ("http", true, true)
+        }
+    } else if is_decode {
+        ("decode", true, true)
+    } else {
+        ("connection", false, false)
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_inference_models_discover(
+    request: InferenceDiscoveryRequest,
+    state: State<'_, DesktopAppState>,
+) -> Result<InferenceDiscoveryResult, BridgeError> {
+    let spec = gents::inference_setup::connection_spec(
+        request.provider,
+        request.auth_method,
+        &request.endpoint,
+    )
+    .map_err(|error| BridgeError::untyped(error.to_string()))?;
+    let api_key = request
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if spec.api_key_required && api_key.is_none() {
+        return Err(BridgeError::untyped("API key is required"));
+    }
+
+    let credential = if let Some(provider) = spec.oauth_provider {
+        let core = current_core(&state)
+            .ok_or_else(|| BridgeError::untyped("desktop client is not running"))?;
+        let access = core
+            .operator_access(request.agent_did.trim())
+            .map_err(|error| BridgeError::untyped(error.to_string()))?;
+        gents::oauth_credential::list_oauth_credentials_on(&access, request.agent_did.trim())
+            .await
+            .map_err(|error| BridgeError::untyped(error.to_string()))?
+            .into_iter()
+            .find(|credential| credential.enabled && credential.provider == provider)
+    } else {
+        None
+    };
+    if spec.oauth_provider.is_some() && credential.is_none() {
+        return Err(BridgeError::untyped(
+            "the selected provider account is not connected",
+        ));
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| BridgeError::untyped(error.to_string()))?;
+    let requested_endpoint = request.endpoint.trim().to_string();
+    let discovered = gents::discover_backend_models(
+        &client,
+        spec.provider_kind,
+        &spec.endpoint,
+        api_key,
+        credential.as_ref(),
+    )
+    .await;
+
+    let (reachable, models, failure, manual_entry_allowed) = match discovered {
+        Ok(models) if models.is_empty() => (
+            true,
+            Vec::new(),
+            Some(InferenceDiscoveryFailure {
+                kind: "empty_catalog".into(),
+                message: "The connection succeeded, but the provider advertised no models.".into(),
+            }),
+            true,
+        ),
+        Ok(models) => {
+            let models = models
+                .into_iter()
+                .map(|model| {
+                    gents::inference_setup::model_option(
+                        request.provider,
+                        request.auth_method,
+                        model,
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+                .map_err(|error| BridgeError::untyped(error.to_string()))?;
+            (true, models, None, false)
+        }
+        Err(error) => {
+            let (kind, reachable, manual_entry_allowed) = classify_discovery_failure(&error);
+            (
+                reachable,
+                Vec::new(),
+                Some(InferenceDiscoveryFailure {
+                    kind: kind.into(),
+                    message: format!("{error:#}"),
+                }),
+                manual_entry_allowed,
+            )
+        }
+    };
+
+    Ok(InferenceDiscoveryResult {
+        request_key: request.request_key,
+        contract_version: gents::inference_setup::INFERENCE_SETUP_CONTRACT_VERSION,
+        defaults_version: gents::inference_setup::INFERENCE_DEFAULTS_VERSION.into(),
+        requested_endpoint,
+        effective_endpoint: spec.endpoint,
+        backend_name: spec.backend_name.into(),
+        provider_kind: spec.provider_kind,
+        openai_wire_api: spec.openai_wire_api,
+        reachable,
+        models,
+        manual_entry_allowed,
+        failure,
+    })
+}
 
 #[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
@@ -430,6 +673,37 @@ pub(crate) async fn desktop_grok_login<R: Runtime>(
 #[cfg(test)]
 mod provider_account_tests {
     use super::*;
+
+    #[test]
+    fn manual_model_entry_requires_a_reachable_discovery_endpoint() {
+        let auth = anyhow::Error::new(gents::backend_provider::ModelDiscoveryHttpError {
+            provider: "test".into(),
+            url: "http://test/models".into(),
+            status: 401,
+            body: "unauthorized".into(),
+        });
+        assert_eq!(
+            classify_discovery_failure(&auth),
+            ("authentication", true, false)
+        );
+
+        let unavailable = anyhow::Error::new(gents::backend_provider::ModelDiscoveryHttpError {
+            provider: "test".into(),
+            url: "http://test/models".into(),
+            status: 404,
+            body: "missing".into(),
+        });
+        assert_eq!(
+            classify_discovery_failure(&unavailable),
+            ("http", true, true)
+        );
+
+        let disconnected = anyhow::anyhow!("connection refused");
+        assert_eq!(
+            classify_discovery_failure(&disconnected),
+            ("connection", false, false)
+        );
+    }
 
     #[test]
     fn provider_account_view_never_serializes_tokens() {

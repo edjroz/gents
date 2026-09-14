@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import type {
+  BackendProviderKind,
   DeploymentView,
   InferenceExecution,
+  InferenceModelRecommendation,
   InferenceProfile,
   InferenceSampling,
 } from "@source-inc/gents-desktop-client";
@@ -25,6 +28,11 @@ import {
 } from "./draft";
 import { DeleteButton, ListDetail } from "./ListDetail";
 import { Group } from "./rows";
+import {
+  InferenceModelControls,
+  recommendedInferenceSettings,
+  type InferenceSettingsDraft,
+} from "../inference/InferenceModelControls";
 
 function Editor({
   shell,
@@ -254,6 +262,66 @@ function Editor({
       }),
     );
   });
+  const [recommendation, setRecommendation] =
+    useState<InferenceModelRecommendation | null>(null);
+  const [guided, setGuided] = useState<InferenceSettingsDraft | null>(null);
+  const [customize, setCustomize] = useState(false);
+  useEffect(() => {
+    const backend = deployment.inferenceBackends.find(
+      (entry) => entry.backendId === d.draft.backendId,
+    );
+    if (!backend?.providerKind || !backend.endpoint || !d.draft.modelName.trim()) {
+      setRecommendation(null);
+      setGuided(null);
+      return;
+    }
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void shell.api
+        .getInferenceBackendRecommendation({
+          providerKind: backend.providerKind as BackendProviderKind,
+          endpoint: backend.endpoint!,
+          modelName: d.draft.modelName.trim(),
+          displayName: null,
+          contextWindow: null,
+          maxOutputTokens: null,
+          reasoningEfforts: null,
+        })
+        .then((next) => {
+          if (cancelled) return;
+          const defaults = recommendedInferenceSettings(next);
+          setRecommendation(next);
+          setGuided({
+            ...defaults,
+            contextWindow: d.draft.contextWindow || defaults.contextWindow,
+            maxOutputTokens: d.draft.maxOutputTokens || defaults.maxOutputTokens,
+            temperature: d.draft.temperature || defaults.temperature,
+            topP: d.draft.topP || defaults.topP,
+            reasoningEffort:
+              (d.draft.reasoningEffort as InferenceSettingsDraft["reasoningEffort"]) ||
+              defaults.reasoningEffort,
+            maxConcurrent: str(backend.maxConcurrent) || defaults.maxConcurrent,
+          });
+        });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+    // Draft fields are intentionally captured for the exact backend/model request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d.draft.backendId, d.draft.modelName, deployment.inferenceBackends, shell.api]);
+  const updateGuided = (next: InferenceSettingsDraft) => {
+    setGuided(next);
+    d.set("contextWindow", next.contextWindow);
+    d.set("maxOutputTokens", next.maxOutputTokens);
+    d.set("temperature", next.temperature);
+    d.set("topP", next.topP);
+    d.set("reasoningEffort", next.reasoningEffort as typeof d.draft.reasoningEffort);
+    if ((next.temperature || next.topP) && !d.draft.samplingId) {
+      d.set("samplingId", `${profile.profile_id}-sampling`);
+    }
+  };
   const id = (f: string) => `${profile.profile_id}-${f}`;
   return (
     <>
@@ -295,129 +363,19 @@ function Editor({
           onCommit={d.commit}
           onEnter={d.onEnter}
         />
-        <ChoiceRow
-          id={id("reasoning")}
-          label="Reasoning effort"
-          value={d.draft.reasoningEffort}
-          onChange={(v) =>
-            d.choose(
-              "reasoningEffort",
-              v as NonNullable<InferenceProfile["reasoning_effort"]> | "",
-            )
-          }
-          items={[
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra",
-          ].map((value) => ({ value, label: value }))}
-          none="Provider default"
-        />
-        <NumberRow
-          id={id("context")}
-          label="Context window"
-          description="Positive whole number, or blank for model capability."
-          value={d.draft.contextWindow}
-          onChange={(v) => d.set("contextWindow", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("maxout")}
-          label="Max output tokens"
-          value={d.draft.maxOutputTokens}
-          onChange={(v) => d.set("maxOutputTokens", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
       </Group>
-      <Group title="Sampling">
-        <TextRow
-          id={id("sampling")}
-          label="Sampling document ID"
-          description="Reuse an existing ID or enter a new one for these settings."
-          value={d.draft.samplingId}
-          onChange={(v) => d.set("samplingId", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-          mono
-        />
-        <NumberRow
-          id={id("temperature")}
-          label="Temperature"
-          value={d.draft.temperature}
-          onChange={(v) => d.set("temperature", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("top-p")}
-          label="Top P"
-          description="Between 0 and 1."
-          value={d.draft.topP}
-          onChange={(v) => d.set("topP", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("top-k")}
-          label="Top K"
-          description="Positive whole number."
-          value={d.draft.topK}
-          onChange={(v) => d.set("topK", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("seed")}
-          label="Seed"
-          description="Non-negative whole number."
-          value={d.draft.seed}
-          onChange={(v) => d.set("seed", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("min-p")}
-          label="Min P"
-          description="Between 0 and 1."
-          value={d.draft.minP}
-          onChange={(v) => d.set("minP", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("frequency-penalty")}
-          label="Frequency penalty"
-          description="Between -2 and 2."
-          value={d.draft.frequencyPenalty}
-          onChange={(v) => d.set("frequencyPenalty", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("presence-penalty")}
-          label="Presence penalty"
-          description="Between -2 and 2."
-          value={d.draft.presencePenalty}
-          onChange={(v) => d.set("presencePenalty", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-        <NumberRow
-          id={id("repetition-penalty")}
-          label="Repetition penalty"
-          description="Positive number."
-          value={d.draft.repetitionPenalty}
-          onChange={(v) => d.set("repetitionPenalty", v)}
-          onCommit={d.commit}
-          onEnter={d.onEnter}
-        />
-      </Group>
+      {recommendation && guided ? (
+        <Group title="Model-aware defaults">
+          <InferenceModelControls
+            recommendation={recommendation}
+            value={guided}
+            onChange={updateGuided}
+            expanded={customize}
+            onExpandedChange={setCustomize}
+            includeConcurrency={false}
+          />
+        </Group>
+      ) : null}
       <Group title="Execution">
         <TextRow
           id={id("execution")}

@@ -40,15 +40,34 @@ test.describe("first-run install", () => {
 
     await page.getByTestId("setup-next").click();
     await expect(
-      page.getByRole("heading", { name: "Configure inference" }),
+      page.getByRole("heading", { name: "Choose an inference provider" }),
     ).toBeVisible({
       timeout: 15_000,
     });
     await expect(
       page.getByRole("radiogroup", { name: "Inference provider" }),
     ).toBeVisible();
+    for (const provider of ["OpenAI", "Anthropic", "Grok", "Local", "OpenRouter"]) {
+      await expect(
+        page.getByRole("radio", { name: new RegExp(`^${provider}`) }),
+      ).toBeVisible();
+    }
     await page.getByTestId("setup-provider-local").click();
-    await expect(page.getByText(/Found a server at/)).toBeVisible({ timeout: 10_000 });
+    await page.getByTestId("setup-next").click();
+    await expect(page.getByRole("heading", { name: "Connect Local" })).toBeVisible();
+    await page.getByTestId("setup-next").click();
+    await expect(page.getByRole("heading", { name: "Choose a model" })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId("setup-next")).toBeDisabled();
+    await page.getByRole("option", { name: "GLM-5.3-Flash-NVFP4" }).click();
+    await expect(page.getByTestId("setup-next")).toBeEnabled();
+    await page.getByTestId("setup-next").click();
+    await expect(page.getByRole("heading", { name: "Review inference" })).toBeVisible();
+    await expect(page.getByText(/temperature 1 and top-p 0.95/)).toBeVisible();
+    await page.getByRole("button", { name: "Customize" }).click();
+    await expect(page.getByLabel("Temperature")).toHaveValue("1");
+    await expect(page.getByLabel("Top-p")).toHaveValue("0.95");
     await page.getByTestId("setup-next").click();
 
     await expect(page.getByRole("heading", { name: "You’re in" })).toBeVisible();

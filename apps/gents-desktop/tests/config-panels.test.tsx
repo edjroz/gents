@@ -31,6 +31,16 @@ function harness() {
     probeInferenceEndpoint: vi
       .fn()
       .mockResolvedValue({ reachable: true, models: ["model-a"] }),
+    getInferenceBackendRecommendation: vi.fn().mockResolvedValue({
+      defaultsVersion: "test",
+      summary: "Gents recommends balanced sampling.",
+      contextWindow: null,
+      maxOutputTokens: null,
+      temperature: { recommended: 0.7, min: 0, max: 2, step: 0.05 },
+      topP: { recommended: 1, min: 0, max: 1, step: 0.05 },
+      reasoningEffort: null,
+      maxConcurrent: { recommended: 1, min: 1, max: null },
+    }),
     listProviderAccounts: vi.fn().mockResolvedValue([]),
     disconnectProviderAccount: vi.fn().mockResolvedValue(undefined),
     saveInferenceProfileConfig: vi.fn().mockResolvedValue({}),
@@ -284,26 +294,17 @@ describe("configuration panels", () => {
     );
   });
 
-  it("validates the full inference profile, sampling, and execution surface", async () => {
+  it("validates model-supported profile defaults and execution settings", async () => {
     const { api, shell } = harness();
     render(<ProfilesPanel shell={shell} deployment={deployment} item="profile-a" />);
+    await screen.findByText("Gents recommends balanced sampling.");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Customize" }));
     expectFields([
       "Display name",
       "Description",
       "Backend",
       "Model",
-      "Reasoning effort",
-      "Context window",
-      "Max output tokens",
-      "Sampling document ID",
-      "Temperature",
-      "Top P",
-      "Top K",
-      "Seed",
-      "Min P",
-      "Frequency penalty",
-      "Presence penalty",
-      "Repetition penalty",
       "Execution document ID",
       "Max turns",
       "Max total tokens",
@@ -313,8 +314,11 @@ describe("configuration panels", () => {
       "Retry policy ID",
       "Tags",
     ]);
-    const user = await replace("Top P", "1.5");
-    await replace("Sampling document ID", "sampling-a");
+    expect(screen.getByLabelText("Temperature")).toHaveValue(0.7);
+    expect(screen.getByLabelText("Top-p")).toHaveValue(1);
+    const topP = screen.getByLabelText("Top-p");
+    await user.clear(topP);
+    await user.type(topP, "1.5");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Top P must be 1 or less",

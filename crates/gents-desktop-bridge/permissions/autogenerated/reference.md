@@ -596,6 +596,84 @@ Denies the desktop_grok_login_cancel command without any pre-configured scope.
 <tr>
 <td>
 
+`gents-desktop-bridge:allow-desktop-inference-backend-recommendation`
+
+</td>
+<td>
+
+Enables the desktop_inference_backend_recommendation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:deny-desktop-inference-backend-recommendation`
+
+</td>
+<td>
+
+Denies the desktop_inference_backend_recommendation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:allow-desktop-inference-model-recommendation`
+
+</td>
+<td>
+
+Enables the desktop_inference_model_recommendation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:deny-desktop-inference-model-recommendation`
+
+</td>
+<td>
+
+Denies the desktop_inference_model_recommendation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:allow-desktop-inference-models-discover`
+
+</td>
+<td>
+
+Enables the desktop_inference_models_discover command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:deny-desktop-inference-models-discover`
+
+</td>
+<td>
+
+Denies the desktop_inference_models_discover command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `gents-desktop-bridge:allow-desktop-inference-profile-delete`
 
 </td>
@@ -641,6 +719,32 @@ Enables the desktop_inference_profile_save command without any pre-configured sc
 <td>
 
 Denies the desktop_inference_profile_save command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:allow-desktop-inference-setup-catalog`
+
+</td>
+<td>
+
+Enables the desktop_inference_setup_catalog command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`gents-desktop-bridge:deny-desktop-inference-setup-catalog`
+
+</td>
+<td>
+
+Denies the desktop_inference_setup_catalog command without any pre-configured scope.
 
 </td>
 </tr>

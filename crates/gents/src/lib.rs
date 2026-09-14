@@ -45,6 +45,7 @@ pub mod health_checker;
 pub mod hook;
 pub mod identity;
 pub mod inference_http;
+pub mod inference_setup;
 pub mod interrupt;
 #[cfg(test)]
 pub(crate) mod lean_vocab_test;

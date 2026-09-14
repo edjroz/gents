@@ -241,6 +241,22 @@
       "permissionSet": "config-write"
     },
     {
+      "name": "desktop_inference_setup_catalog",
+      "permissionSet": "config-write"
+    },
+    {
+      "name": "desktop_inference_models_discover",
+      "permissionSet": "config-write"
+    },
+    {
+      "name": "desktop_inference_model_recommendation",
+      "permissionSet": "config-write"
+    },
+    {
+      "name": "desktop_inference_backend_recommendation",
+      "permissionSet": "config-write"
+    },
+    {
       "name": "desktop_codex_login",
       "permissionSet": "config-write"
     },
@@ -309,7 +325,7 @@
       "permissionSet": "native-e2e"
     }
   ],
-  "contractVersion": "7.4",
+  "contractVersion": "7.5",
   "errorCodes": [
     "clientNotRunning",
     "clientStartFailed",
@@ -437,5 +453,5 @@
       "name": "full"
     }
   ],
-  "wireSchemaHash": "60ca6db18b274769f7f278759057f7bd99effb544a9c0d8478043ac5d33947a7"
+  "wireSchemaHash": "8f470361c4100a5d61ef302187c3a040449698859efe3290c2e5144300726a80"
 }

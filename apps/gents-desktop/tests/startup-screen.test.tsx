@@ -72,6 +72,27 @@ function bridge(
     fetchSessionSnapshot: vi.fn(async () => null),
     setSelectedAgent: vi.fn(async () => undefined),
     startDesktopClient,
+    getInferenceSetupCatalog: vi.fn(async () => ({
+      contractVersion: 1,
+      defaultsVersion: "test",
+      providers: [
+        {
+          id: "local",
+          displayName: "Local",
+          description: "OpenAI-compatible local server.",
+          authMethods: ["optional_api_key"],
+          authOptions: [
+            {
+              method: "optional_api_key",
+              displayName: "Endpoint + optional key",
+              defaultEndpoint: "http://127.0.0.1:11434/v1",
+            },
+          ],
+          defaultAuthMethod: "optional_api_key",
+          defaultEndpoint: "http://127.0.0.1:11434/v1",
+        },
+      ],
+    })),
   } as unknown as DesktopApiAdapter;
   const listenToUpdates: DesktopClientUpdatedListenerFactory = async () => () => {};
   return { api, listenToUpdates };
@@ -218,7 +239,7 @@ describe("desktop startup screen", () => {
       expect(screen.getByTestId("setup-screen")).toBeInTheDocument();
     });
     expect(
-      screen.getByRole("heading", { name: "Configure inference" }),
+      screen.getByRole("heading", { name: "Choose an inference provider" }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("startup-screen")).not.toBeInTheDocument();
   });

@@ -27,6 +27,9 @@ import type { DesktopOperationsSnapshot } from "../types/operations.js";
 import { createDesktopInvoker } from "./invoke.js";
 import type { DesktopApiAdapter, ManagedServerStatus } from "./types.js";
 import type { ProviderAccountView } from "../generated/ProviderAccountView.js";
+import type { InferenceSetupCatalog } from "../generated/InferenceSetupCatalog.js";
+import type { InferenceDiscoveryResult } from "../generated/InferenceDiscoveryResult.js";
+import type { InferenceModelRecommendation } from "../generated/InferenceModelRecommendation.js";
 
 export function createDesktopApiAdapter(
   transport: DesktopTransport,
@@ -220,6 +223,25 @@ export function createDesktopApiAdapter(
       invokeDesktop<InferenceProbeResult>("desktop_probe_inference_endpoint", {
         request: { endpoint },
       }),
+    getInferenceSetupCatalog: () =>
+      invokeDesktop<InferenceSetupCatalog>("desktop_inference_setup_catalog"),
+    discoverInferenceModels: (request) =>
+      invokeDesktop<InferenceDiscoveryResult>(
+        "desktop_inference_models_discover",
+        {
+          request,
+        },
+      ),
+    getInferenceModelRecommendation: (request) =>
+      invokeDesktop<InferenceModelRecommendation>(
+        "desktop_inference_model_recommendation",
+        { request },
+      ),
+    getInferenceBackendRecommendation: (request) =>
+      invokeDesktop<InferenceModelRecommendation>(
+        "desktop_inference_backend_recommendation",
+        { request },
+      ),
     codexLogin: (agentDid, provider) =>
       invokeDesktop<CodexLoginResult>("desktop_codex_login", {
         request: { agentDid, provider: provider ?? null },
