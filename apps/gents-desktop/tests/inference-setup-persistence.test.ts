@@ -33,6 +33,39 @@ const discovery: InferenceDiscoveryResult = {
 };
 
 describe("inference setup persistence", () => {
+  it("preserves a configured compatible backend when adding another endpoint", () => {
+    const deployment = structuredClone(fixtureDeployment);
+    deployment.inferenceBackends = [
+      {
+        ...deployment.inferenceBackends[0]!,
+        backendId: "local",
+        providerKind: "OpenAiCompatible",
+        endpoint: "http://another-server:8000/v1",
+        apiKeyConfigured: true,
+      },
+    ];
+    const plan = buildInferenceSetupPlan({
+      deployment,
+      provider: "local",
+      apiKey: "",
+      oauth: false,
+      discovery,
+      model: "GLM-5.3-Flash-NVFP4",
+      recommendation,
+      settings: {
+        contextWindow: "",
+        maxOutputTokens: "",
+        temperature: "1",
+        topP: "0.95",
+        reasoningEffort: "",
+        maxConcurrent: "1",
+      },
+    });
+    expect(plan.document.inference_backends?.[0]?.backend_id).toBe("local-2");
+    expect(plan.document.inference_profiles?.[0]?.backend_id).toBe("local-2");
+    expect(plan.profileId).toBe("profile-local-2");
+  });
+
   it("plans backend, exact model defaults, and Setup behavior in one document", () => {
     const deployment = structuredClone(fixtureDeployment);
     deployment.inferenceBackends = [

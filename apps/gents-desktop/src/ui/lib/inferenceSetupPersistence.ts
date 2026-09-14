@@ -36,20 +36,34 @@ export function buildInferenceSetupPlan({
   recommendation: InferenceModelRecommendation;
   settings: InferenceSetupSettings;
 }): { document: PackConfig; profileId: string; defaultBehaviorId: string } {
-  const sameKind = deployment.inferenceBackends.find(
-    (backend) => backend.providerKind === discovery.providerKind,
+  const normalizedEndpoint = (endpoint: string | null) =>
+    endpoint?.trim().replace(/\/+$/, "") ?? "";
+  const sameConnection = deployment.inferenceBackends.find(
+    (backend) =>
+      backend.providerKind === discovery.providerKind &&
+      normalizedEndpoint(backend.endpoint) ===
+        normalizedEndpoint(discovery.effectiveEndpoint),
   );
   const placeholder = deployment.inferenceBackends.find(
     (backend) => !backendIsConfigured(backend),
   );
   const addingExtra = deployment.inferenceBackends.some(
     (backend) =>
-      backendIsConfigured(backend) && backend.providerKind !== discovery.providerKind,
+      backendIsConfigured(backend) && backend.backendId !== sameConnection?.backendId,
   );
   const backendId =
-    sameKind?.backendId ??
+    sameConnection?.backendId ??
     (!addingExtra ? placeholder?.backendId : undefined) ??
-    provider;
+    (() => {
+      let candidate: string = provider;
+      let suffix = 2;
+      while (
+        deployment.inferenceBackends.some((backend) => backend.backendId === candidate)
+      ) {
+        candidate = `${provider}-${suffix++}`;
+      }
+      return candidate;
+    })();
   const existingProfile =
     deployment.inferenceProfiles.find((row) => row.backend_id === backendId) ??
     (!addingExtra ? deployment.inferenceProfiles[0] : undefined);
