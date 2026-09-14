@@ -180,6 +180,8 @@ fn export_all(dir: &Path) -> Result<(), String> {
     export_types!(
         DesktopInitRequest,
         ManagedServerStartRequest,
+        ManagedServerRestartRequest,
+        ManagedServerRootValidationRequest,
         PeerStatusFetchRequest,
         EnrollmentStatusRequest,
         ChatSendRequest,
@@ -233,6 +235,7 @@ fn export_all(dir: &Path) -> Result<(), String> {
         DesktopInitSummary,
         ManagedServerState,
         ManagedServerStatus,
+        ManagedServerRootValidation,
         PeerRemoveResponse,
         EnrollmentRequestView,
         NetworkStatusView,

@@ -404,6 +404,23 @@ impl ClientCore {
         self.sync_state.subscribe()
     }
 
+    /// Clear the live readiness observation before a desktop-managed runtime
+    /// is deliberately restarted. The signed enrollment remains durable, but
+    /// the replacement process must re-establish both route legs before chat
+    /// writes reopen.
+    pub async fn mark_managed_runtime_restarting(&self, agent_did: &str) -> Result<()> {
+        let records = self.peer_records().await;
+        for record in records.into_iter().filter(|record| {
+            record.agent_did == agent_did
+                && record.is_enrollment()
+                && record.is_managed_runtime()
+                && record.pairing_ready
+        }) {
+            self.sync_state.set_pairing_ready(&record, false).await?;
+        }
+        Ok(())
+    }
+
     async fn send_p2p_command(&self, command: P2PSupervisorCommand) -> Result<()> {
         let sender = self
             .p2p_control

@@ -48,10 +48,23 @@ export function createDesktopApiAdapter(
       invokeDesktop<DesktopClientSnapshot>("desktop_client_shutdown"),
     managedServerStatus: () =>
       invokeDesktop<ManagedServerStatus>("desktop_managed_server_status"),
-    startManagedServer: (agentName) =>
+    startManagedServer: (agentName, authority) =>
       invokeDesktop<ManagedServerStatus>("desktop_managed_server_start", {
-        request: { agentName },
+        request: {
+          agentName,
+          toolCeiling: authority?.toolCeiling ?? null,
+          toolRoot: authority?.toolRoot ?? null,
+        },
       }),
+    restartManagedServer: (agentName, authority) =>
+      invokeDesktop<ManagedServerStatus>("desktop_managed_server_restart", {
+        request: { agentName, ...authority },
+      }),
+    validateManagedServerRoot: (path) =>
+      invokeDesktop<{ canonicalPath: string }>(
+        "desktop_managed_server_validate_root",
+        { request: { path } },
+      ).then((result) => result.canonicalPath),
     commitManagedServerAutoStart: (agentName) =>
       invokeDesktop<ManagedServerStatus>("desktop_managed_server_start", {
         request: { agentName },

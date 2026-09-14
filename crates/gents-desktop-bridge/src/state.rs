@@ -120,7 +120,7 @@ pub fn spawn_client_update_task<R: Runtime>(
     })
 }
 
-pub fn current_core(state: &State<'_, DesktopAppState>) -> Option<Arc<ClientCore>> {
+pub fn current_core(state: &DesktopAppState) -> Option<Arc<ClientCore>> {
     state
         .bridge
         .lock()

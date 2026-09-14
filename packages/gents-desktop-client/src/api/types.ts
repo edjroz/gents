@@ -4,6 +4,7 @@ import type { EventSourceSaveRequest } from "../generated/EventSourceSaveRequest
 import type { EventSourceDeleteRequest } from "../generated/EventSourceDeleteRequest.js";
 import type { BackendHealth } from "../types/backendHealth.js";
 import type { ManagedServerStatus } from "../generated/ManagedServerStatus.js";
+import type { ManagedServerToolCeiling } from "../generated/ManagedServerToolCeiling.js";
 import type { ProviderAccountView } from "../generated/ProviderAccountView.js";
 import type {
   AgentConfigSaveRequest,
@@ -62,6 +63,11 @@ import type {
   DesktopOperationsSnapshotRequest,
 } from "../types/operations.js";
 
+export type ManagedServerAuthorityInput = {
+  toolCeiling: ManagedServerToolCeiling;
+  toolRoot: string | null;
+};
+
 export type DesktopApiAdapter = {
   fetchDesktopSnapshot: () => Promise<DesktopClientSnapshot>;
   initLocalStandardRuntime: (request: {
@@ -72,7 +78,15 @@ export type DesktopApiAdapter = {
   startDesktopClient: () => Promise<DesktopClientSnapshot>;
   shutdownDesktopClient: () => Promise<DesktopClientSnapshot>;
   managedServerStatus?: () => Promise<ManagedServerStatus>;
-  startManagedServer?: (agentName: string) => Promise<ManagedServerStatus>;
+  startManagedServer?: (
+    agentName: string,
+    authority?: ManagedServerAuthorityInput,
+  ) => Promise<ManagedServerStatus>;
+  restartManagedServer?: (
+    agentName: string,
+    authority: ManagedServerAuthorityInput,
+  ) => Promise<ManagedServerStatus>;
+  validateManagedServerRoot?: (path: string) => Promise<string>;
   commitManagedServerAutoStart?: (
     agentName: string,
   ) => Promise<ManagedServerStatus>;

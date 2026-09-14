@@ -1537,7 +1537,7 @@ pub(crate) enum ConfigCommand {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, ValueEnum, PartialEq, Eq)]
-pub(crate) enum ToolCeilingArg {
+pub enum ToolCeilingArg {
     MetaOnly,
     Readonly,
     Readwrite,

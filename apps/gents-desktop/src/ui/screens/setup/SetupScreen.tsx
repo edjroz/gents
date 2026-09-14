@@ -20,6 +20,7 @@ import {
 import type {
   BackendProviderKind,
   DesktopClientSnapshot,
+  ManagedServerAuthorityInput,
   OpenAiWireApi,
 } from "@source-inc/gents-desktop-client";
 import { Button } from "@gents/ui/components/button";
@@ -48,8 +49,25 @@ import { applyTheme, themePreference } from "@/theme";
 import { Mark } from "@/app/Mark";
 import { openExternalUrl } from "../../../lib/externalLinks";
 import { watchProviderLoginUrl, type OauthProvider } from "@/lib/providerLogin";
+import {
+  ManagedRuntimeAuthorityPicker,
+  ManagedRuntimeAuthorityReview,
+  authorityForPreset,
+} from "@/components/ManagedRuntimeAuthority";
+import {
+  authoritiesEqual,
+  type ManagedRuntimePreset,
+} from "@/lib/managedRuntimeAuthority";
 
-type Step = "welcome" | "remote" | "agent" | "starting" | "inference" | "ready";
+type Step =
+  | "welcome"
+  | "remote"
+  | "agent"
+  | "authority"
+  | "authority-review"
+  | "starting"
+  | "inference"
+  | "ready";
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1";
 const OPENAI_DEFAULT_MODEL = "gpt-5.4-mini";
@@ -291,11 +309,19 @@ export function SetupScreen({
 }) {
   const [step, setStep] = useState<Step>(initialStep);
   const allowLocal = !isMobileTauriShell();
+  const api = shell.api;
   const [where, setWhere] = useState<"local" | "remote">(
     allowLocal ? "local" : "remote",
   );
   const [address, setAddress] = useState("");
   const [name, setName] = useState("Forge");
+  const [homeRoot, setHomeRoot] = useState<string | null>(
+    api.managedServerStatus ? null : (shell.snapshot?.bootstrap.initToolRoot ?? null),
+  );
+  const [authorityPreset, setAuthorityPreset] =
+    useState<ManagedRuntimePreset>("full-home");
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+  const [authorityError, setAuthorityError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Exclude<DesktopStartupPhase, "ready">>(
@@ -312,8 +338,23 @@ export function SetupScreen({
   }>({ status: "idle", url: "", models: [] });
   const [signedIn, setSignedIn] = useState<string | null>(null);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
-  const api = shell.api;
   const root = shell.snapshot?.bootstrap.defaultAgentHome ?? "~/.gents";
+  const authority = homeRoot
+    ? authorityForPreset(authorityPreset, homeRoot, selectedDirectory)
+    : null;
+
+  useEffect(() => {
+    if (step !== "authority" || !api.managedServerStatus || homeRoot) return;
+    const pending = api.managedServerStatus();
+    if (!pending) return;
+    void pending
+      .then((status) => {
+        if (status.suggestedToolRoot) setHomeRoot(status.suggestedToolRoot);
+      })
+      .catch((cause) =>
+        setAuthorityError(cause instanceof Error ? cause.message : String(cause)),
+      );
+  }, [api, homeRoot, step]);
 
   const finishProvisioning = async () => {
     const next = await api.fetchDesktopSnapshot();
@@ -357,19 +398,54 @@ export function SetupScreen({
 
   const createAgent = async () => {
     const agentName = name.trim() || "Local Agent";
+    if (!authority) {
+      setAuthorityError(
+        homeRoot
+          ? "Choose and validate an existing directory."
+          : "The user home directory is still being resolved.",
+      );
+      setStep("authority");
+      return;
+    }
     setBusy(true);
     setError(null);
     setStep("starting");
     setPhase("checking-managed-server");
     try {
       if (api.startManagedServer) {
-        await api.startManagedServer(agentName);
+        const status = await api.startManagedServer(agentName, authority);
+        const confirmed: ManagedServerAuthorityInput | null =
+          status.effectiveToolCeiling
+            ? {
+                toolCeiling: status.effectiveToolCeiling,
+                toolRoot: status.effectiveToolRoot,
+              }
+            : null;
+        if (!confirmed || !authoritiesEqual(confirmed, authority)) {
+          throw new Error(
+            "The managed runtime started with different authority than the reviewed settings.",
+          );
+        }
       }
       setPhase("loading-configuration");
       await shell.onInitLocalRuntime(agentName);
       setPhase("starting-client");
       if (api.commitManagedServerAutoStart) {
         await api.commitManagedServerAutoStart(agentName);
+      }
+      if (api.managedServerStatus) {
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const status = await api.managedServerStatus();
+          if (status.pairingReady) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+        }
+        const status = await api.managedServerStatus();
+        if (!status.pairingReady) {
+          throw new Error(
+            "The hosted agent started, but secure background pairing is not ready.",
+          );
+        }
       }
       await finishProvisioning();
     } catch (e) {
@@ -702,10 +778,91 @@ export function SetupScreen({
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
         <Nav
           onBack={() => setStep("welcome")}
-          next={createAgent}
-          nextLabel="Start"
-          busy={busy}
+          next={() => setStep("authority")}
           disabled={!name.trim()}
+        />
+      </Frame>
+    );
+  }
+  if (step === "authority") {
+    return (
+      <Frame>
+        <Title note="This is the most access any behavior can receive. You can make individual behaviors narrower later.">
+          What can the hosted agent do on this computer?
+        </Title>
+        {homeRoot ? (
+          <ManagedRuntimeAuthorityPicker
+            home={homeRoot}
+            preset={authorityPreset}
+            selectedDirectory={selectedDirectory}
+            onPresetChange={setAuthorityPreset}
+            onDirectoryChange={setSelectedDirectory}
+            validateRoot={api.validateManagedServerRoot}
+            error={authorityError}
+            onError={setAuthorityError}
+          />
+        ) : (
+          <div className="grid gap-3">
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner /> Resolving your home directory…
+            </p>
+            {authorityError ? (
+              <>
+                <p className="text-sm text-destructive">{authorityError}</p>
+                <Button
+                  variant="outline"
+                  className="justify-self-start"
+                  onClick={() => {
+                    setAuthorityError(null);
+                    void api
+                      .managedServerStatus?.()
+                      .then((status) => {
+                        if (status?.suggestedToolRoot) {
+                          setHomeRoot(status.suggestedToolRoot);
+                        }
+                      })
+                      .catch((cause) =>
+                        setAuthorityError(
+                          cause instanceof Error ? cause.message : String(cause),
+                        ),
+                      );
+                  }}
+                >
+                  Try again
+                </Button>
+              </>
+            ) : null}
+          </div>
+        )}
+        <Nav
+          onBack={() => setStep("agent")}
+          next={() => {
+            if (!authority) {
+              setAuthorityError("Choose and validate an existing directory.");
+              return;
+            }
+            setStep("authority-review");
+          }}
+          disabled={!authority}
+        />
+      </Frame>
+    );
+  }
+  if (step === "authority-review" && authority) {
+    return (
+      <Frame>
+        <Title note="The managed runtime will start with exactly these host limits.">
+          Review access
+        </Title>
+        <ManagedRuntimeAuthorityReview authority={authority} />
+        {authorityError ? (
+          <p className="mt-3 text-sm text-destructive">{authorityError}</p>
+        ) : null}
+        <Nav
+          onBack={() => setStep("authority")}
+          next={createAgent}
+          nextLabel="Start hosted agent"
+          busy={busy}
         />
       </Frame>
     );
@@ -754,7 +911,7 @@ export function SetupScreen({
               variant="brand"
               onClick={() => {
                 setError(null);
-                setStep("agent");
+                setStep(where === "local" ? "authority-review" : "remote");
               }}
             >
               Try again

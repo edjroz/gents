@@ -9,12 +9,26 @@ import { Button } from "@gents/ui/components/button";
 import { Spinner } from "@gents/ui/components/spinner";
 import { Switch } from "@gents/ui/components/switch";
 import type { Shell } from "@/hooks/useShell";
+import {
+  ManagedRuntimeAuthorityPicker,
+  ManagedRuntimeAuthorityReview,
+  authorityForPreset,
+} from "@/components/ManagedRuntimeAuthority";
+import {
+  authoritiesEqual,
+  presetForAuthority,
+  type ManagedRuntimePreset,
+} from "@/lib/managedRuntimeAuthority";
 import { Fact, Group, Row } from "./rows";
 
 export function LocalServer({ shell }: { shell: Shell }) {
   const api = shell.api;
   const [status, setStatus] = useState<ManagedServerStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editingAuthority, setEditingAuthority] = useState(false);
+  const [preset, setPreset] = useState<ManagedRuntimePreset>("full-home");
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+  const [authorityError, setAuthorityError] = useState<string | null>(null);
   const load = () => api.managedServerStatus?.().then(setStatus, () => setStatus(null));
   useEffect(() => {
     void load();
@@ -39,6 +53,58 @@ export function LocalServer({ shell }: { shell: Shell }) {
   };
   const running = status?.state === "running" || status?.state === "external";
   const name = status?.agentName ?? "gents";
+  const home = status?.suggestedToolRoot ?? status?.effectiveToolRoot ?? "";
+  const authority = home ? authorityForPreset(preset, home, selectedDirectory) : null;
+  const beginAuthorityEdit = () => {
+    if (!status || !home) return;
+    const nextPreset = presetForAuthority(
+      status.effectiveToolCeiling,
+      status.effectiveToolRoot,
+      home,
+    );
+    setPreset(nextPreset);
+    setSelectedDirectory(
+      nextPreset === "selected-directory" ? status.effectiveToolRoot : null,
+    );
+    setAuthorityError(null);
+    setEditingAuthority(true);
+  };
+  const restartWithAuthority = async () => {
+    if (!authority || !api.restartManagedServer) return;
+    setBusy(true);
+    setAuthorityError(null);
+    try {
+      let next = await api.restartManagedServer(name, authority);
+      setStatus(next);
+      const deadline = Date.now() + 30_000;
+      while (!next.pairingReady && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        next = (await api.managedServerStatus?.()) ?? next;
+        setStatus(next);
+      }
+      if (!next.pairingReady) {
+        throw new Error("The runtime restarted, but background pairing is not ready.");
+      }
+      const confirmed = next.effectiveToolCeiling
+        ? {
+            toolCeiling: next.effectiveToolCeiling,
+            toolRoot: next.effectiveToolRoot,
+          }
+        : null;
+      if (!confirmed || !authoritiesEqual(confirmed, authority)) {
+        throw new Error(
+          "The managed runtime restarted with different authority than the reviewed settings.",
+        );
+      }
+      setEditingAuthority(false);
+      await shell.refreshSnapshot();
+      toast("Managed runtime restarted with the reviewed access");
+    } catch (cause) {
+      setAuthorityError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <Group
       title="Local server"
@@ -105,6 +171,52 @@ export function LocalServer({ shell }: { shell: Shell }) {
           }
         />
       </Row>
+      <Row
+        label="Host access"
+        description="Runtime-confirmed process ceiling. Changes require one managed restart."
+      >
+        <div className="grid justify-items-end gap-1 text-right">
+          <Fact>{status?.effectiveToolCeiling ?? "—"}</Fact>
+          <Fact mono>{status?.effectiveToolRoot ?? "No host path"}</Fact>
+          {running && status?.state !== "external" ? (
+            <Button size="sm" variant="outline" onClick={beginAuthorityEdit}>
+              Change access…
+            </Button>
+          ) : null}
+        </div>
+      </Row>
+      {editingAuthority && home ? (
+        <div className="grid gap-4 border-t border-border/60 pt-4">
+          <p className="text-sm font-medium">Restart-required access change</p>
+          <ManagedRuntimeAuthorityPicker
+            home={home}
+            preset={preset}
+            selectedDirectory={selectedDirectory}
+            onPresetChange={setPreset}
+            onDirectoryChange={setSelectedDirectory}
+            validateRoot={api.validateManagedServerRoot}
+            error={authorityError}
+            onError={setAuthorityError}
+          />
+          {authority ? <ManagedRuntimeAuthorityReview authority={authority} /> : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setEditingAuthority(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="brand"
+              disabled={busy || !authority}
+              onClick={() => void restartWithAuthority()}
+            >
+              {busy ? <Spinner /> : null} Review complete — restart
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <Row label="GraphQL">
         <Fact mono>{status?.graphql ?? "—"}</Fact>
       </Row>

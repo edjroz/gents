@@ -7,6 +7,8 @@ use ts_rs::TS;
 use crate::error::BridgeErrorCode;
 
 /// Exact `MAJOR.MINOR` contract version. The client accepts no version range.
+// 7.4: additive — managed-runtime root/ceiling launch, validation, restart,
+//      pairing readiness, and runtime-confirmed effective status.
 // 7.3: additive — Context delete plus backend tags and Skill interface/tags.
 // 7.2: additive — Claude subscription login/cancel and desktop://claude-login-url.
 // 7.1: additive — TaskView carries canonical task hooks and tags.
@@ -56,13 +58,13 @@ use crate::error::BridgeErrorCode;
 // grantable [[set]] entries + default (core/client-lifecycle).
 // 0.3: BridgeError on command Err paths; SnapshotGrants projection; native-e2e.
 // 0.2: desktop_bridge_contract, desktop_peer_probe_address; peer_status by id.
-pub const CONTRACT_VERSION: &str = "7.3";
+pub const CONTRACT_VERSION: &str = "7.4";
 
 /// Exact digest of the committed generated TypeScript wire tree. The client
 /// checks this in addition to semantic versioning, so a DTO shape change
 /// cannot silently ship under an unchanged contract version.
 pub const WIRE_SCHEMA_HASH: &str =
-    "e8630c24508b27dc770c9491f2c121c475dc40195c9506f34438f35f1c4a612d";
+    "60ca6db18b274769f7f278759057f7bd99effb544a9c0d8478043ac5d33947a7";
 
 /// Package version string shared with workspace release train.
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -130,6 +132,8 @@ pub fn command_inventory() -> Vec<CommandContract> {
         ("desktop_managed_server_status", "runtime-admin"),
         ("desktop_managed_server_start", "runtime-admin"),
         ("desktop_managed_server_stop", "runtime-admin"),
+        ("desktop_managed_server_restart", "runtime-admin"),
+        ("desktop_managed_server_validate_root", "runtime-admin"),
         // session-read
         ("desktop_session_snapshot", "session-read"),
         ("desktop_session_live_delta", "session-read"),
@@ -597,6 +601,8 @@ mod tests {
             ("desktop_managed_server_status", "mutate"),
             ("desktop_managed_server_start", "mutate"),
             ("desktop_managed_server_stop", "mutate"),
+            ("desktop_managed_server_restart", "mutate"),
+            ("desktop_managed_server_validate_root", "mutate"),
             ("desktop_session_snapshot", "read"),
             ("desktop_session_live_delta", "read"),
             ("desktop_session_hydration_retry", "mutate"),

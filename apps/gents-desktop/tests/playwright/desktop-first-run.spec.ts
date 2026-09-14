@@ -1,4 +1,11 @@
-import { composer, expect, gotoHarness, sendButton, test } from "./desktopTest";
+import {
+  composer,
+  expect,
+  gotoHarness,
+  openConfig,
+  sendButton,
+  test,
+} from "./desktopTest";
 
 test.describe("first-run install", () => {
   test("creates a local agent, adds inference, and starts a conversation", async ({
@@ -16,6 +23,20 @@ test.describe("first-run install", () => {
     await expect(page.getByRole("textbox", { name: "Agent name" })).toHaveValue(
       "Forge",
     );
+
+    await page.getByTestId("setup-next").click();
+    await expect(
+      page.getByRole("heading", {
+        name: "What can the hosted agent do on this computer?",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("radio", { name: /Work across my home folder/ }),
+    ).toBeChecked();
+
+    await page.getByTestId("setup-next").click();
+    await expect(page.getByRole("heading", { name: "Review access" })).toBeVisible();
+    await expect(page.getByText("/tmp/gents-bombadil/workspace")).toBeVisible();
 
     await page.getByTestId("setup-next").click();
     await expect(
@@ -44,5 +65,35 @@ test.describe("first-run install", () => {
     await expect(page.getByText(/Bombadil harness response/)).toBeVisible({
       timeout: 10_000,
     });
+
+    await openConfig(page);
+    await expect(page.getByText("Local server")).toBeVisible();
+    await page.getByRole("button", { name: "Change access…" }).click();
+    await page.getByRole("button", { name: "Customize" }).click();
+    await page.getByRole("radio", { name: /No files or commands/ }).click();
+    await page.getByRole("button", { name: "Review complete — restart" }).click();
+    await expect(page.getByText("meta-only")).toBeVisible();
+    await expect(page.getByText("No host path").first()).toBeVisible();
+  });
+
+  test("keeps invalid directories inline and reviews an alternate preset", async ({
+    page,
+  }) => {
+    await gotoHarness(page, "empty-fleet");
+    await page.getByTestId("setup-next").click();
+    await page.getByTestId("setup-next").click();
+
+    await page.getByRole("radio", { name: /Use one folder/ }).click();
+    await page.getByLabel("Existing directory").fill("/missing folder");
+    await page.getByLabel("Existing directory").press("Tab");
+    await expect(page.getByText(/Cannot access \/missing folder/)).toBeVisible();
+    await expect(page.getByTestId("setup-next")).toBeDisabled();
+
+    await page.getByRole("button", { name: "Customize" }).click();
+    await page.getByRole("radio", { name: /No files or commands/ }).click();
+    await page.getByTestId("setup-next").click();
+    await expect(page.getByRole("heading", { name: "Review access" })).toBeVisible();
+    await expect(page.getByText("No host path")).toBeVisible();
+    await expect(page.getByText(/no host file or shell authority/i)).toBeVisible();
   });
 });

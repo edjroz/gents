@@ -38,6 +38,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(init(platform_bridge_config()))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
     #[cfg(desktop)]
     let builder = builder.setup(setup_tray).on_window_event(|window, event| {

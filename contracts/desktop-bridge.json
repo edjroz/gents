@@ -45,6 +45,14 @@
       "permissionSet": "runtime-admin"
     },
     {
+      "name": "desktop_managed_server_restart",
+      "permissionSet": "runtime-admin"
+    },
+    {
+      "name": "desktop_managed_server_validate_root",
+      "permissionSet": "runtime-admin"
+    },
+    {
       "name": "desktop_session_snapshot",
       "permissionSet": "session-read"
     },
@@ -301,7 +309,7 @@
       "permissionSet": "native-e2e"
     }
   ],
-  "contractVersion": "7.3",
+  "contractVersion": "7.4",
   "errorCodes": [
     "clientNotRunning",
     "clientStartFailed",
@@ -429,5 +437,5 @@
       "name": "full"
     }
   ],
-  "wireSchemaHash": "e8630c24508b27dc770c9491f2c121c475dc40195c9506f34438f35f1c4a612d"
+  "wireSchemaHash": "60ca6db18b274769f7f278759057f7bd99effb544a9c0d8478043ac5d33947a7"
 }
