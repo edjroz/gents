@@ -52,6 +52,9 @@ describe("managed runtime restart settings", () => {
     await user.click(screen.getByRole("button", { name: "Review complete — restart" }));
 
     expect(await screen.findByText("meta-only")).toBeInTheDocument();
+    // Authority is published before pairing finishes. Wait for that second
+    // phase too, so its timer cannot outlive the test's DOM environment.
+    expect(await screen.findByText("pairing probe failed")).toBeInTheDocument();
     expect(api.restartManagedServer).toHaveBeenCalledWith("Workshop Agent", {
       toolCeiling: "meta-only",
       toolRoot: null,
