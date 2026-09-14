@@ -7,6 +7,8 @@ use ts_rs::TS;
 use crate::error::BridgeErrorCode;
 
 /// Exact `MAJOR.MINOR` contract version. The client accepts no version range.
+// 7.5: additive — versioned provider setup catalog, model discovery, and
+//      provider/model recommendation commands.
 // 7.4: additive — managed-runtime root/ceiling launch, validation, restart,
 //      pairing readiness, and runtime-confirmed effective status.
 // 7.3: additive — Context delete plus backend tags and Skill interface/tags.
@@ -58,13 +60,13 @@ use crate::error::BridgeErrorCode;
 // grantable [[set]] entries + default (core/client-lifecycle).
 // 0.3: BridgeError on command Err paths; SnapshotGrants projection; native-e2e.
 // 0.2: desktop_bridge_contract, desktop_peer_probe_address; peer_status by id.
-pub const CONTRACT_VERSION: &str = "7.4";
+pub const CONTRACT_VERSION: &str = "7.5";
 
 /// Exact digest of the committed generated TypeScript wire tree. The client
 /// checks this in addition to semantic versioning, so a DTO shape change
 /// cannot silently ship under an unchanged contract version.
 pub const WIRE_SCHEMA_HASH: &str =
-    "60ca6db18b274769f7f278759057f7bd99effb544a9c0d8478043ac5d33947a7";
+    "3a8c6e3da515f67b094a77c92793336aea678ea91fa9875266710e20b20479e9";
 
 /// Package version string shared with workspace release train.
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -194,6 +196,10 @@ pub fn command_inventory() -> Vec<CommandContract> {
         ("desktop_tool_service_save", "config-write"),
         ("desktop_tool_service_test", "config-write"),
         ("desktop_probe_inference_endpoint", "config-write"),
+        ("desktop_inference_setup_catalog", "config-write"),
+        ("desktop_inference_models_discover", "config-write"),
+        ("desktop_inference_model_recommendation", "config-write"),
+        ("desktop_inference_backend_recommendation", "config-write"),
         ("desktop_codex_login", "config-write"),
         ("desktop_codex_login_cancel", "config-write"),
         ("desktop_grok_login", "config-write"),
@@ -650,6 +656,10 @@ mod tests {
             ("desktop_tool_service_save", "mutate"),
             ("desktop_tool_service_test", "mutate"),
             ("desktop_probe_inference_endpoint", "mutate"),
+            ("desktop_inference_setup_catalog", "mutate"),
+            ("desktop_inference_models_discover", "mutate"),
+            ("desktop_inference_model_recommendation", "mutate"),
+            ("desktop_inference_backend_recommendation", "mutate"),
             ("desktop_codex_login", "mutate"),
             ("desktop_codex_login_cancel", "mutate"),
             ("desktop_grok_login", "mutate"),

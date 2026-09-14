@@ -318,6 +318,21 @@ pub async fn list_oauth_credentials(
         .collect()
 }
 
+/// Read agent-scoped credentials through the selected canonical control-plane
+/// access. Desktop-managed runtimes use their operator GraphQL endpoint here;
+/// callers must not fall back to a replicated client copy for private tokens.
+pub async fn list_oauth_credentials_on(
+    access: &crate::config_client::ConfigAccess,
+    agent_did: &str,
+) -> Result<Vec<OAuthCredential>> {
+    let response = access
+        .execute(&oauth_credentials_for_agent_query(agent_did))
+        .await?;
+    oauth_credentials_from_response(&response)
+        .into_iter()
+        .collect()
+}
+
 pub async fn lookup_oauth_credential_by_doc_id(
     node: &EmbeddedNode,
     doc_id: &str,

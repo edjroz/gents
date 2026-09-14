@@ -6,6 +6,12 @@ import type { BackendHealth } from "../types/backendHealth.js";
 import type { ManagedServerStatus } from "../generated/ManagedServerStatus.js";
 import type { ManagedServerToolCeiling } from "../generated/ManagedServerToolCeiling.js";
 import type { ProviderAccountView } from "../generated/ProviderAccountView.js";
+import type { InferenceSetupCatalog } from "../generated/InferenceSetupCatalog.js";
+import type { InferenceDiscoveryRequest } from "../generated/InferenceDiscoveryRequest.js";
+import type { InferenceDiscoveryResult } from "../generated/InferenceDiscoveryResult.js";
+import type { InferenceRecommendationRequest } from "../generated/InferenceRecommendationRequest.js";
+import type { InferenceBackendRecommendationRequest } from "../generated/InferenceBackendRecommendationRequest.js";
+import type { InferenceModelRecommendation } from "../generated/InferenceModelRecommendation.js";
 import type {
   AgentConfigSaveRequest,
   BackendDeleteRequest,
@@ -202,6 +208,16 @@ export type DesktopApiAdapter = {
     request: BackendSaveRequest,
   ) => Promise<DesktopClientSnapshot>;
   probeInferenceEndpoint: (endpoint: string) => Promise<InferenceProbeResult>;
+  getInferenceSetupCatalog: () => Promise<InferenceSetupCatalog>;
+  discoverInferenceModels: (
+    request: InferenceDiscoveryRequest,
+  ) => Promise<InferenceDiscoveryResult>;
+  getInferenceModelRecommendation: (
+    request: InferenceRecommendationRequest,
+  ) => Promise<InferenceModelRecommendation>;
+  getInferenceBackendRecommendation: (
+    request: InferenceBackendRecommendationRequest,
+  ) => Promise<InferenceModelRecommendation>;
   codexLogin: (
     agentDid: string,
     provider?: string | null,

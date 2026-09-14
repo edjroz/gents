@@ -1,9 +1,8 @@
 /* First run, from the Startup designs: choose where the agent lives,
-   name it, watch it come online, then set up inference. Every step
-   calls the bridge the way the desktop app does: initLocalStandardRuntime,
-   requestStatusEnrollment, probeInferenceEndpoint, the provider logins
-   and saveBackendConfig. */
-import { useEffect, useState } from "react";
+   name it, watch it come online, then progressively connect one inference
+   provider. Provider/model guidance comes from the versioned Rust contract;
+   the final canonical documents are committed in one operator transaction. */
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -18,10 +17,14 @@ import {
   Wifi,
 } from "lucide-react";
 import type {
-  BackendProviderKind,
   DesktopClientSnapshot,
   ManagedServerAuthorityInput,
-  OpenAiWireApi,
+  InferenceAuthMethod,
+  InferenceDiscoveryResult,
+  InferenceModelOption,
+  InferenceModelRecommendation,
+  InferenceProviderId,
+  InferenceSetupCatalog,
 } from "@source-inc/gents-desktop-client";
 import { Button } from "@gents/ui/components/button";
 import { Input } from "@gents/ui/components/input";
@@ -41,7 +44,6 @@ import {
   type LoadingStepState,
 } from "../../../lib/loadingStatus";
 import type { Shell } from "@/hooks/useShell";
-import { backendIsConfigured, shouldRebindSetupDefault } from "@/lib/firstRun";
 import { setupStewardPatches } from "@/lib/setupSteward";
 import { isMobileTauriShell } from "../../../lib/shellPlatform";
 import { AgentAvatar } from "@/screens/AgentAvatar";
@@ -58,6 +60,17 @@ import {
   authoritiesEqual,
   type ManagedRuntimePreset,
 } from "@/lib/managedRuntimeAuthority";
+import {
+  currentInferenceDiscovery,
+  inferenceDiscoveryKey,
+} from "@/lib/providerDiscovery";
+import { buildInferenceSetupPlan } from "@/lib/inferenceSetupPersistence";
+import {
+  InferenceModelControls,
+  recommendedInferenceSettings,
+  validateInferenceSettings,
+  type InferenceSettingsDraft,
+} from "../inference/InferenceModelControls";
 
 type Step =
   | "welcome"
@@ -69,57 +82,39 @@ type Step =
   | "inference"
   | "ready";
 
-const OPENAI_ENDPOINT = "https://api.openai.com/v1";
-const OPENAI_DEFAULT_MODEL = "gpt-5.4-mini";
-const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1";
-const OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o-mini";
-const LOCAL_DEFAULT_URL = "http://127.0.0.1:11434/v1";
-const LOCAL_PROBE_URLS = ["http://127.0.0.1:8080/v1", LOCAL_DEFAULT_URL];
-const GROK_ENDPOINT = "https://cli-chat-proxy.grok.com/v1";
-const GROK_DEFAULT_MODEL = "grok-4.5";
-const CLAUDE_ENDPOINT = "claude-cli://subscription";
-const CLAUDE_DEFAULT_MODEL = "claude-sonnet-5";
-const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex";
-const CODEX_DEFAULT_MODEL = "gpt-5.5";
+type ProviderId = InferenceProviderId;
+type InferenceStage = "provider" | "connect" | "model" | "review";
+type ConnectionDraft = {
+  authMethod: InferenceAuthMethod;
+  endpoint: string;
+  apiKey: string;
+};
 
-const PROVIDERS = [
-  {
-    id: "openai",
-    title: "OpenAI",
-    hint: "Sign in with ChatGPT, or paste an API key.",
-    icon: KeyRound,
-    logo: "/logos/openai.svg",
-  },
-  {
-    id: "anthropic",
-    title: "Anthropic",
-    hint: "Sign in with Claude Pro or Max.",
-    icon: Sparkles,
-    logo: "/logos/claude.svg",
-  },
-  {
-    id: "grok",
-    title: "Grok",
-    hint: "Sign in with SuperGrok or X Premium+.",
-    icon: Orbit,
-    logo: "/logos/grok.svg",
-  },
-  {
-    id: "local",
-    title: "Local",
-    hint: "Ollama, llama.cpp or any OpenAI-compatible server.",
-    icon: Server,
-    logo: "/logos/ollama.svg",
-  },
-  {
-    id: "openrouter",
-    title: "Open Router",
-    hint: "One key for many hosted models.",
-    icon: KeyRound,
-    logo: "/logos/openrouter.svg",
-  },
-] as const;
-type ProviderId = (typeof PROVIDERS)[number]["id"];
+const PROVIDER_VISUALS: Record<ProviderId, { icon: typeof Server; logo: string }> = {
+  openai: { icon: KeyRound, logo: "/logos/openai.svg" },
+  anthropic: { icon: Sparkles, logo: "/logos/claude.svg" },
+  grok: { icon: Orbit, logo: "/logos/grok.svg" },
+  local: { icon: Server, logo: "/logos/ollama.svg" },
+  openrouter: { icon: KeyRound, logo: "/logos/openrouter.svg" },
+};
+
+const authLabel = (method: InferenceAuthMethod) =>
+  ({
+    chat_gpt_oauth: "ChatGPT sign-in",
+    api_key: "API key",
+    claude_oauth: "Claude sign-in",
+    grok_oauth: "Grok sign-in",
+    optional_api_key: "Endpoint + optional key",
+  })[method];
+
+const oauthProviderFor = (method: InferenceAuthMethod): OauthProvider | null =>
+  method === "chat_gpt_oauth"
+    ? "openai"
+    : method === "claude_oauth"
+      ? "anthropic"
+      : method === "grok_oauth"
+        ? "grok"
+        : null;
 
 function Frame({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState(themePreference);
@@ -268,36 +263,6 @@ const stepIcon = (state: LoadingStepState | null) =>
     <span className="size-1.5 rounded-full bg-border" />
   );
 
-function defaultEndpoint(id: ProviderId) {
-  switch (id) {
-    case "openai":
-      return OPENAI_ENDPOINT;
-    case "openrouter":
-      return OPENROUTER_ENDPOINT;
-    case "local":
-      return LOCAL_DEFAULT_URL;
-    case "anthropic":
-      return CLAUDE_ENDPOINT;
-    case "grok":
-      return GROK_ENDPOINT;
-  }
-}
-
-function defaultModel(id: ProviderId) {
-  switch (id) {
-    case "openai":
-      return OPENAI_DEFAULT_MODEL;
-    case "openrouter":
-      return OPENROUTER_DEFAULT_MODEL;
-    case "anthropic":
-      return CLAUDE_DEFAULT_MODEL;
-    case "grok":
-      return GROK_DEFAULT_MODEL;
-    case "local":
-      return "";
-  }
-}
-
 export function SetupScreen({
   shell,
   onDone,
@@ -327,16 +292,13 @@ export function SetupScreen({
   const [phase, setPhase] = useState<Exclude<DesktopStartupPhase, "ready">>(
     "checking-managed-server",
   );
+  const [inferenceStage, setInferenceStage] = useState<InferenceStage>("provider");
+  const [catalog, setCatalog] = useState<InferenceSetupCatalog | null>(null);
   const [provider, setProvider] = useState<ProviderId>("openai");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState(OPENAI_DEFAULT_MODEL);
-  const [endpoint, setEndpoint] = useState(OPENAI_ENDPOINT);
-  const [probe, setProbe] = useState<{
-    status: "idle" | "probing" | "found" | "none";
-    url: string;
-    models: string[];
-  }>({ status: "idle", url: "", models: [] });
-  const [signedIn, setSignedIn] = useState<string | null>(null);
+  const [connections, setConnections] = useState<
+    Partial<Record<ProviderId, ConnectionDraft>>
+  >({});
+  const [signedIn, setSignedIn] = useState<Partial<Record<ProviderId, string>>>({});
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const root = shell.snapshot?.bootstrap.defaultAgentHome ?? "~/.gents";
   const authority = homeRoot
@@ -355,6 +317,18 @@ export function SetupScreen({
         setAuthorityError(cause instanceof Error ? cause.message : String(cause)),
       );
   }, [api, homeRoot, step]);
+  const [discovery, setDiscovery] = useState<InferenceDiscoveryResult | null>(null);
+  const [modelSearch, setModelSearch] = useState("");
+  const [model, setModel] = useState("");
+  const [manualModel, setManualModel] = useState(false);
+  const [settings, setSettings] = useState<InferenceSettingsDraft | null>(null);
+  const [selectedRecommendation, setSelectedRecommendation] =
+    useState<InferenceModelRecommendation | null>(null);
+  const [customize, setCustomize] = useState(false);
+  const discoveryRevision = useRef(0);
+  const currentDiscoveryKey = useRef("");
+  const connection = connections[provider];
+  const providerOption = catalog?.providers.find((option) => option.id === provider);
 
   const finishProvisioning = async () => {
     const next = await api.fetchDesktopSnapshot();
@@ -371,30 +345,28 @@ export function SetupScreen({
   };
 
   useEffect(() => {
-    if (step !== "inference" || provider !== "local" || probe.status !== "idle") return;
-    void (async () => {
-      await Promise.resolve();
-      setProbe({ status: "probing", url: "", models: [] });
-      const urls = endpoint.trim()
-        ? [
-            endpoint.trim(),
-            ...LOCAL_PROBE_URLS.filter((url) => url !== endpoint.trim()),
-          ]
-        : LOCAL_PROBE_URLS;
-      for (const url of urls) {
-        const result = await api.probeInferenceEndpoint(url).catch(() => null);
-        if (result?.reachable && result.models.length) {
-          setProbe({ status: "found", url, models: result.models });
-          setEndpoint(url);
-          setModel((m) => m || result.models[0]!);
-          return;
-        }
-      }
-      setProbe({ status: "none", url: "", models: [] });
-    })();
-    // Probe the current endpoint plus the usual local ports once per idle.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, provider, probe.status, api]);
+    if (step !== "inference" || catalog) return;
+    void api
+      .getInferenceSetupCatalog()
+      .then((next) => {
+        setCatalog(next);
+        setConnections((current) => {
+          const initialized = { ...current };
+          for (const option of next.providers) {
+            initialized[option.id] ??= {
+              authMethod: option.defaultAuthMethod,
+              endpoint: option.defaultEndpoint,
+              apiKey: "",
+            };
+          }
+          return initialized;
+        });
+        if (next.providers[0]) setProvider(next.providers[0].id);
+      })
+      .catch((cause) =>
+        setError(cause instanceof Error ? cause.message : String(cause)),
+      );
+  }, [api, catalog, step]);
 
   const createAgent = async () => {
     const agentName = name.trim() || "Local Agent";
@@ -471,10 +443,9 @@ export function SetupScreen({
     }
   };
   const signIn = async () => {
-    if (provider !== "openai" && provider !== "anthropic" && provider !== "grok") {
-      return;
-    }
-    const oauthProvider: OauthProvider = provider;
+    if (!connection) return;
+    const oauthProvider = oauthProviderFor(connection.authMethod);
+    if (!oauthProvider) return;
     setBusy(true);
     setError(null);
     setAuthUrl(null);
@@ -492,12 +463,11 @@ export function SetupScreen({
           : oauthProvider === "anthropic"
             ? await api.claudeLogin(agentDid)
             : await api.grokLogin(agentDid);
-      setSignedIn(result.credentialId);
+      setSignedIn((current) => ({ ...current, [provider]: result.credentialId }));
+      invalidateDiscovery();
       setAuthUrl(null);
-      if (oauthProvider === "openai") setModel(CODEX_DEFAULT_MODEL);
-      await persistInference({ signedInId: result.credentialId });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       unlisten();
       setBusy(false);
@@ -505,174 +475,171 @@ export function SetupScreen({
   };
 
   const cancelSignIn = () => {
-    if (provider === "openai") void api.cancelCodexLogin();
-    else if (provider === "anthropic") void api.cancelClaudeLogin();
-    else if (provider === "grok") void api.cancelGrokLogin();
+    const oauthProvider = connection ? oauthProviderFor(connection.authMethod) : null;
+    if (oauthProvider === "openai") void api.cancelCodexLogin();
+    else if (oauthProvider === "anthropic") void api.cancelClaudeLogin();
+    else if (oauthProvider === "grok") void api.cancelGrokLogin();
   };
-  const persistInference = async (opts?: { signedInId?: string }) => {
-    const signed = opts?.signedInId ?? signedIn;
+
+  const invalidateDiscovery = () => {
+    discoveryRevision.current += 1;
+    currentDiscoveryKey.current = "";
+    setDiscovery(null);
+    setModel("");
+    setManualModel(false);
+    setSelectedRecommendation(null);
+    setSettings(null);
+    setCustomize(false);
+  };
+
+  const updateConnection = (changes: Partial<ConnectionDraft>) => {
+    setConnections((current) => ({
+      ...current,
+      [provider]: { ...current[provider]!, ...changes },
+    }));
+    invalidateDiscovery();
+    setError(null);
+  };
+
+  const discoverModels = async () => {
+    if (!connection) return;
+    setBusy(true);
+    setError(null);
+    const snapshot = await api.fetchDesktopSnapshot();
+    const agentDid =
+      shell.snapshot?.client?.deployments[0]?.agentDid ??
+      snapshot.client?.deployments[0]?.agentDid;
+    if (!agentDid) {
+      setBusy(false);
+      setError("No agent to configure");
+      return;
+    }
+    const requestKey = inferenceDiscoveryKey(
+      ++discoveryRevision.current,
+      provider,
+      connection.authMethod,
+      connection.endpoint,
+    );
+    currentDiscoveryKey.current = requestKey;
+    try {
+      const result = await api.discoverInferenceModels({
+        requestKey,
+        agentDid,
+        provider,
+        authMethod: connection.authMethod,
+        endpoint: connection.endpoint,
+        apiKey: connection.apiKey.trim() || null,
+      });
+      const current = currentInferenceDiscovery(currentDiscoveryKey.current, result);
+      if (!current) return;
+      setDiscovery(current);
+      // Discovery supplies choices, but the user makes the one model decision.
+      // Even a one-item catalog is never accepted implicitly.
+      setModel("");
+      setSelectedRecommendation(null);
+      setSettings(null);
+      setInferenceStage("model");
+    } catch (cause) {
+      if (currentDiscoveryKey.current !== requestKey) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const chooseModel = (option: InferenceModelOption) => {
+    setModel(option.advertised.model_name);
+    setSelectedRecommendation(option.recommendation);
+    setSettings(recommendedInferenceSettings(option.recommendation));
+    setCustomize(false);
+  };
+
+  const describeManualModel = async () => {
+    if (!connection || !model.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const recommendation = await api.getInferenceModelRecommendation({
+        provider,
+        authMethod: connection.authMethod,
+        modelName: model.trim(),
+        displayName: null,
+        contextWindow: null,
+        maxOutputTokens: null,
+        reasoningEfforts: null,
+      });
+      setSelectedRecommendation(recommendation);
+      setSettings(recommendedInferenceSettings(recommendation));
+      setInferenceStage("review");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const persistInference = async () => {
+    if (!connection || !discovery || !selectedRecommendation || !settings)
+      throw new Error("Complete provider discovery and model selection first");
+    const settingsError = validateInferenceSettings(selectedRecommendation, settings);
+    if (settingsError) throw new Error(settingsError);
     const snapshot = await api.fetchDesktopSnapshot();
     const deployment =
       shell.snapshot?.client?.deployments[0] ?? snapshot.client?.deployments[0];
     if (!deployment) throw new Error("No agent to configure");
-    const spec =
-      provider === "openai" && signed && !apiKey.trim()
-        ? {
-            backendId: "openai",
-            name: "ChatGPT",
-            providerKind: "ChatGptCodex" as const,
-            openaiWireApi: "responses" as const,
-            endpoint: CODEX_ENDPOINT,
-            apiKey: null as string | null,
-            oauth: true,
-            models: [model.trim() || CODEX_DEFAULT_MODEL],
-          }
-        : provider === "openai"
-          ? {
-              backendId: "openai",
-              name: "OpenAI",
-              providerKind: "OpenAiCompatible" as const,
-              openaiWireApi: "responses" as const,
-              endpoint: endpoint.trim() || OPENAI_ENDPOINT,
-              apiKey: apiKey.trim(),
-              oauth: false,
-              models: [model.trim() || OPENAI_DEFAULT_MODEL],
-            }
-          : provider === "openrouter"
-            ? {
-                backendId: "openrouter",
-                name: "Open Router",
-                providerKind: "OpenRouter" as const,
-                openaiWireApi: "chat_completions" as const,
-                endpoint: endpoint.trim() || OPENROUTER_ENDPOINT,
-                apiKey: apiKey.trim(),
-                oauth: false,
-                models: [model.trim() || OPENROUTER_DEFAULT_MODEL],
-              }
-            : provider === "anthropic"
-              ? {
-                  backendId: "anthropic",
-                  name: "Anthropic",
-                  providerKind: "ClaudeCliSubscription" as const,
-                  openaiWireApi: null,
-                  endpoint: CLAUDE_ENDPOINT,
-                  apiKey: null as string | null,
-                  oauth: true,
-                  models: [model.trim() || CLAUDE_DEFAULT_MODEL],
-                }
-              : provider === "grok"
-                ? {
-                    backendId: "grok",
-                    name: "Grok",
-                    providerKind: "XaiGrokOAuth" as const,
-                    openaiWireApi: "chat_completions" as const,
-                    endpoint: GROK_ENDPOINT,
-                    apiKey: null as string | null,
-                    oauth: true,
-                    models: [model.trim() || GROK_DEFAULT_MODEL],
-                  }
-                : {
-                    backendId: "local",
-                    name: "Local server",
-                    providerKind: "OpenAiCompatible" as const,
-                    openaiWireApi: "chat_completions" as const,
-                    endpoint: endpoint.trim() || probe.url || LOCAL_DEFAULT_URL,
-                    apiKey: apiKey.trim() || null,
-                    oauth: false,
-                    models: [model.trim() || probe.models[0] || "gents-7b"],
-                  };
-    const sameKind = deployment.inferenceBackends.find(
-      (backend) => backend.providerKind === spec.providerKind,
-    );
-    const placeholder = deployment.inferenceBackends.find(
-      (backend) => !backendIsConfigured(backend),
-    );
-    const addingExtra = deployment.inferenceBackends.some(
-      (backend) =>
-        backendIsConfigured(backend) && backend.providerKind !== spec.providerKind,
-    );
-    const backendId =
-      sameKind?.backendId ??
-      (!addingExtra ? placeholder?.backendId : undefined) ??
-      spec.backendId;
-    const existingProfile =
-      deployment.inferenceProfiles.find((p) => p.backend_id === backendId) ??
-      (!addingExtra ? deployment.inferenceProfiles[0] : undefined);
-    const profileId = existingProfile?.profile_id ?? `profile-${backendId}`;
-    await api.saveBackendConfig({
-      document: {
-        agent_did: deployment.agentDid,
-        backend_id: backendId,
-        name: spec.name,
-        provider_kind: spec.providerKind as BackendProviderKind,
-        openai_wire_api: spec.openaiWireApi as OpenAiWireApi | null,
-        endpoint: spec.endpoint,
-        auth: spec.oauth
-          ? { kind: "principal_oauth" }
-          : spec.apiKey
-            ? { kind: "api_key", key: spec.apiKey }
-            : { kind: "unauthenticated" },
-        max_concurrent: 2,
-        max_queue_depth: 8,
-        enabled: true,
-      },
+
+    const plan = buildInferenceSetupPlan({
+      deployment,
+      provider,
+      apiKey: connection.apiKey,
+      oauth: oauthProviderFor(connection.authMethod) !== null,
+      discovery,
+      model,
+      recommendation: selectedRecommendation,
+      settings,
     });
-    await api.saveInferenceProfileConfig({
-      document: {
-        ...existingProfile,
-        agent_did: deployment.agentDid,
-        profile_id: profileId,
-        display_name: spec.name,
-        backend_id: backendId,
-        model_name: spec.models[0] ?? "model",
-      },
-    });
-    const defaultBehaviorId = deployment.agentPrincipal.defaultBehaviorId;
-    // A healthy process may make init's generated local placeholder look
-    // configured. The first provider still replaces that placeholder, while
-    // adding another provider later must not change the user's chosen default.
-    const shouldRebindDefault = shouldRebindSetupDefault(deployment, addingExtra);
-    for (const b of deployment.behaviors) {
-      if (
-        !b.inferenceProfileId ||
-        (b.behaviorId === defaultBehaviorId && shouldRebindDefault)
-      ) {
-        await api.saveBehaviorConfig({
-          document: {
-            behavior_id: b.behaviorId,
-            agent_did: deployment.agentDid,
-            display_name: b.displayName,
-            description: b.description,
-            context_id: b.contextId,
-            inference_profile_id: profileId,
-            enabled: b.enabled,
-            tags: b.tags,
-            created_at: b.createdAt,
-          },
-        });
-      }
-    }
-    const next = await api.fetchDesktopSnapshot();
-    const nextDeployment = next.client?.deployments[0];
-    const steward = nextDeployment ? setupStewardPatches(nextDeployment) : [];
-    if (steward.length && nextDeployment) {
-      await api.patchConfigComponents({
-        agentDid: nextDeployment.agentDid,
-        patches: steward,
-      });
-    }
+    await api.applyConfigComponents({ document: plan.document });
+
     await shell.refreshSnapshot();
-    return next;
+    return plan;
+  };
+
+  const waitForSelectedBehavior = async (
+    profileId: string,
+    defaultBehaviorId: string | null,
+  ) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const snapshot = await api.fetchDesktopSnapshot();
+      const deployment = snapshot.client?.deployments.find(
+        (candidate) =>
+          candidate.agentDid === shell.selectedDeployment?.agentDid ||
+          candidate.agentDid === snapshot.client?.deployments[0]?.agentDid,
+      );
+      const bound = deployment?.behaviorConfigs.find(
+        (behavior) =>
+          behavior.behavior_id === defaultBehaviorId &&
+          behavior.inference_profile_id === profileId,
+      );
+      const ready = deployment?.behaviorReadiness.behaviors.some(
+        (status) => status.state === "ready" && status.behaviorId === defaultBehaviorId,
+      );
+      if (bound && ready) return snapshot;
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    throw new Error(
+      "Configuration was saved, but the managed runtime has not reported the Setup behavior active yet.",
+    );
   };
 
   const saveInference = async () => {
     setBusy(true);
     setError(null);
     try {
-      await persistInference();
+      const { profileId, defaultBehaviorId } = await persistInference();
+      await waitForSelectedBehavior(profileId, defaultBehaviorId);
       setStep("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
@@ -681,28 +648,10 @@ export function SetupScreen({
   const pickProvider = (id: ProviderId) => {
     if (busy) cancelSignIn();
     setProvider(id);
-    setSignedIn(null);
     setAuthUrl(null);
-    setApiKey("");
     setError(null);
-    setModel(defaultModel(id));
-    setEndpoint(defaultEndpoint(id));
-    if (id === "local") setProbe({ status: "idle", url: "", models: [] });
+    invalidateDiscovery();
   };
-
-  const inferenceReady =
-    provider === "openai"
-      ? Boolean(signedIn || (apiKey.trim() && endpoint.trim()))
-      : provider === "openrouter"
-        ? Boolean(
-            apiKey.trim() &&
-            endpoint.trim() &&
-            (model.trim() || OPENROUTER_DEFAULT_MODEL),
-          )
-        : provider === "local"
-          ? Boolean((endpoint.trim() || probe.url) && (model.trim() || probe.models[0]))
-          : Boolean(signedIn);
-
   if (step === "welcome") {
     return (
       <Frame>
@@ -925,8 +874,7 @@ export function SetupScreen({
     const agentName =
       shell.selectedDeployment?.agentPrincipal.displayName ??
       (name.trim() || "your agent");
-    const providerTitle =
-      PROVIDERS.find((p) => p.id === provider)?.title ?? "inference";
+    const providerTitle = providerOption?.displayName ?? "Inference";
     return (
       <Frame>
         <Mark className="mb-6 h-6 text-ink" />
@@ -944,7 +892,6 @@ export function SetupScreen({
           next={async () => {
             setBusy(true);
             try {
-              await persistInference();
               const snapshot = await api.fetchDesktopSnapshot();
               onDone(snapshot);
             } catch (e) {
@@ -958,205 +905,313 @@ export function SetupScreen({
       </Frame>
     );
   }
-  return (
-    <Frame>
-      <Title note="Pick a provider and enter its key, sign in, or point at a local endpoint. You can add others later.">
-        Configure inference
-      </Title>
-      <div
-        className="grid grid-cols-2 gap-3"
-        role="radiogroup"
-        aria-label="Inference provider"
-      >
-        {PROVIDERS.map((p) => (
-          <Option
-            key={p.id}
-            selected={provider === p.id}
-            onSelect={() => pickProvider(p.id)}
-            title={p.title}
-            hint={p.hint}
-            icon={p.icon}
-            logo={p.logo}
-            testId={`setup-provider-${p.id}`}
-          />
-        ))}
-      </div>
-      <div className="mt-4 grid min-h-44 content-center rounded-2xl border border-border/60 bg-raised p-4 text-sm">
-        {provider === "local" && (
-          <div className="grid gap-3">
-            <Field label="Endpoint">
-              <Input
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-                placeholder={LOCAL_DEFAULT_URL}
-                className="font-mono"
-              />
-            </Field>
-            {probe.status === "found" ? (
-              <p className="text-xs text-muted-foreground">
-                Found a server at{" "}
-                <span className="font-mono text-foreground">{probe.url}</span>
-              </p>
-            ) : probe.status === "none" ? (
-              <p className="text-xs text-muted-foreground">
-                No server answered.{" "}
-                <button
-                  type="button"
-                  className="underline"
-                  onClick={() => setProbe({ status: "idle", url: "", models: [] })}
-                >
-                  Try again
-                </button>
-              </p>
-            ) : (
-              <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Spinner className="text-foreground" /> Looking for a local server…
-              </p>
-            )}
-            {probe.status === "found" && probe.models.length > 0 ? (
-              <Field label="Model">
-                <Select
-                  items={probe.models.map((m) => ({ value: m, label: m }))}
-                  value={model}
-                  onValueChange={(v) => v && setModel(v)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {probe.models.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            ) : (
-              <Field label="Model">
-                <Input
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="llama3.2"
+  const advertised = discovery?.models.find(
+    (option) => option.advertised.model_name === model,
+  )?.advertised;
+  const filteredModels =
+    discovery?.models.filter((option) => {
+      const query = modelSearch.trim().toLocaleLowerCase();
+      return (
+        !query ||
+        option.advertised.model_name.toLocaleLowerCase().includes(query) ||
+        option.advertised.display_name?.toLocaleLowerCase().includes(query)
+      );
+    }) ?? [];
+  const oauthProvider = connection ? oauthProviderFor(connection.authMethod) : null;
+  const connectionReady = Boolean(
+    connection?.endpoint.trim() &&
+    (oauthProvider
+      ? signedIn[provider]
+      : connection.authMethod === "optional_api_key" || connection.apiKey.trim()),
+  );
+
+  if (inferenceStage === "provider") {
+    return (
+      <Frame>
+        <Title note="Choose one provider first. Connection and model choices come next.">
+          Choose an inference provider
+        </Title>
+        {catalog ? (
+          <div
+            className="grid grid-cols-2 gap-3"
+            role="radiogroup"
+            aria-label="Inference provider"
+          >
+            {catalog.providers.map((option) => {
+              const visual = PROVIDER_VISUALS[option.id];
+              return (
+                <Option
+                  key={option.id}
+                  selected={provider === option.id}
+                  onSelect={() => pickProvider(option.id)}
+                  title={option.displayName}
+                  hint={option.description}
+                  icon={visual.icon}
+                  logo={visual.logo}
+                  testId={`setup-provider-${option.id}`}
                 />
-              </Field>
-            )}
-            <Field label="API key (optional)">
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="if the server requires one"
-              />
-            </Field>
+              );
+            })}
           </div>
+        ) : (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner /> Loading provider options…
+          </p>
         )}
-        {provider === "openrouter" && (
-          <div className="grid gap-3">
-            <Field label="API key">
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-or-…"
-                autoFocus
-              />
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        <Nav
+          onBack={initialStep === "inference" ? undefined : () => setStep("agent")}
+          next={() => setInferenceStage("connect")}
+          disabled={!catalog || !connection}
+        />
+      </Frame>
+    );
+  }
+
+  if (inferenceStage === "connect") {
+    const authOptions = providerOption?.authOptions ?? [];
+    return (
+      <Frame>
+        <Title note="Connect first. Gents will then ask this exact provider for its advertised models.">
+          Connect {providerOption?.displayName ?? "provider"}
+        </Title>
+        <div className="grid gap-4 rounded-2xl border border-border/60 bg-raised p-4 text-sm">
+          {connection && authOptions.length > 1 ? (
+            <Field label="Connection method">
+              <Select
+                items={authOptions.map((option) => ({
+                  value: option.method,
+                  label: option.displayName,
+                }))}
+                value={connection.authMethod}
+                onValueChange={(next) => {
+                  if (!next) return;
+                  const option = authOptions.find((item) => item.method === next);
+                  updateConnection({
+                    authMethod: next as InferenceAuthMethod,
+                    endpoint: option?.defaultEndpoint ?? connection.endpoint,
+                    apiKey: "",
+                  });
+                }}
+              >
+                <SelectTrigger className="w-full" autoFocus>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {authOptions.map((option) => (
+                    <SelectItem key={option.method} value={option.method}>
+                      {option.displayName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
-            <Field label="Endpoint">
-              <Input
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-                placeholder={OPENROUTER_ENDPOINT}
-                className="font-mono"
-              />
-            </Field>
-            <Field label="Model">
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={OPENROUTER_DEFAULT_MODEL}
-              />
-            </Field>
-          </div>
-        )}
-        {(provider === "openai" || provider === "anthropic" || provider === "grok") && (
-          <div className="grid gap-3">
-            {signedIn ? (
-              <p className="flex items-center gap-2">
-                <CircleCheck className="size-4 text-muted-foreground" /> Signed in ·
-                credential <span className="font-mono text-xs">{signedIn}</span>
-              </p>
-            ) : (
-              <div className="grid gap-3">
+          ) : null}
+          {oauthProvider ? (
+            <div className="grid gap-3">
+              {signedIn[provider] ? (
+                <p className="flex items-center gap-2">
+                  <CircleCheck className="size-4" />
+                  Connected credential{" "}
+                  <span className="font-mono text-xs">{signedIn[provider]}</span>
+                </p>
+              ) : (
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-muted-foreground">
-                    {provider === "openai"
-                      ? "Sign in with ChatGPT (Plus, Pro, or Team)."
-                      : PROVIDERS.find((p) => p.id === provider)?.hint}
+                    {authLabel(connection!.authMethod)}
                   </p>
-                  <span className="flex shrink-0 items-center gap-2">
+                  <span className="flex gap-2">
                     {busy ? (
                       <Button variant="outline" onClick={cancelSignIn}>
                         Cancel
                       </Button>
                     ) : null}
-                    <Button variant="outline" onClick={signIn} disabled={busy}>
-                      {busy ? <Spinner /> : null} {busy ? "Waiting…" : "Sign in"}
+                    <Button variant="brand" disabled={busy} onClick={signIn}>
+                      {busy ? <Spinner /> : null}
+                      {busy ? "Waiting…" : "Sign in"}
                     </Button>
                   </span>
                 </div>
-                {authUrl ? (
-                  <p className="text-xs text-muted-foreground">
-                    Browser didn’t open?{" "}
-                    <button
-                      type="button"
-                      className="underline"
-                      onClick={() => void openExternalUrl(authUrl)}
-                    >
-                      Open the sign-in page
-                    </button>
-                  </p>
-                ) : null}
-              </div>
-            )}
-            {provider === "openai" && !signedIn ? (
-              <>
-                <p className="text-xs text-muted-foreground">or paste an API key</p>
-                <Field label="API key">
-                  <Input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="sk-…"
-                  />
-                </Field>
-                <Field label="Endpoint">
-                  <Input
-                    value={endpoint}
-                    onChange={(e) => setEndpoint(e.target.value)}
-                    placeholder={OPENAI_ENDPOINT}
-                    className="font-mono"
-                  />
-                </Field>
-                <Field label="Model">
-                  <Input
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder={OPENAI_DEFAULT_MODEL}
-                  />
-                </Field>
-              </>
-            ) : null}
+              )}
+              {authUrl ? (
+                <button
+                  type="button"
+                  className="justify-self-start text-xs underline"
+                  onClick={() => void openExternalUrl(authUrl)}
+                >
+                  Open the sign-in page
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <Field
+                label={
+                  connection?.authMethod === "optional_api_key"
+                    ? "API key (optional)"
+                    : "API key"
+                }
+              >
+                <Input
+                  type="password"
+                  value={connection?.apiKey ?? ""}
+                  autoFocus={authOptions.length <= 1}
+                  onChange={(event) => updateConnection({ apiKey: event.target.value })}
+                  placeholder="Stored only when you save"
+                />
+              </Field>
+              <Field label="Endpoint">
+                <Input
+                  value={connection?.endpoint ?? ""}
+                  className="font-mono"
+                  onChange={(event) =>
+                    updateConnection({ endpoint: event.target.value })
+                  }
+                />
+              </Field>
+            </>
+          )}
+        </div>
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        <Nav
+          onBack={() => setInferenceStage("provider")}
+          next={discoverModels}
+          nextLabel="Connect and find models"
+          busy={busy}
+          disabled={!connectionReady}
+        />
+      </Frame>
+    );
+  }
+
+  if (inferenceStage === "model") {
+    return (
+      <Frame>
+        <Title note="These names are advertised by the connected provider. Gents will not silently substitute another model.">
+          Choose a model
+        </Title>
+        {discovery?.failure ? (
+          <div className="mb-4 rounded-xl border border-destructive/30 p-3">
+            <p className="text-sm text-destructive">{discovery.failure.message}</p>
+            <Button
+              className="mt-3"
+              variant="outline"
+              onClick={() => setInferenceStage("connect")}
+            >
+              Retry connection
+            </Button>
           </div>
+        ) : null}
+        {discovery?.models.length ? (
+          <div className="grid gap-3">
+            <Input
+              value={modelSearch}
+              onChange={(event) => setModelSearch(event.target.value)}
+              placeholder="Search advertised models"
+              aria-label="Search advertised models"
+              autoFocus
+            />
+            <div
+              role="listbox"
+              aria-label="Advertised models"
+              className="max-h-64 overflow-y-auto rounded-xl border border-border/60 p-1"
+            >
+              {filteredModels.map((option) => (
+                <button
+                  key={option.advertised.model_name}
+                  type="button"
+                  role="option"
+                  aria-selected={model === option.advertised.model_name}
+                  className={cn(
+                    "block w-full rounded-lg px-3 py-2 text-left text-sm",
+                    model === option.advertised.model_name
+                      ? "bg-accent text-foreground"
+                      : "hover:bg-accent/60",
+                  )}
+                  onClick={() => chooseModel(option)}
+                >
+                  <span className="block font-medium">
+                    {option.advertised.display_name ?? option.advertised.model_name}
+                  </span>
+                  {option.advertised.display_name ? (
+                    <span className="block font-mono text-xs text-muted-foreground">
+                      {option.advertised.model_name}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : discovery?.manualEntryAllowed ? (
+          <div className="grid gap-3">
+            <p className="text-sm text-muted-foreground">
+              Model discovery is unavailable. Manual entry is enabled as an explicit
+              fallback and will be saved exactly as entered.
+            </p>
+            <Field label="Manual model identifier">
+              <Input
+                value={model}
+                onChange={(event) => {
+                  setModel(event.target.value);
+                  setManualModel(true);
+                }}
+                placeholder="Exact served model ID"
+                autoFocus
+              />
+            </Field>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No discovery result.</p>
         )}
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        <Nav
+          onBack={() => setInferenceStage("connect")}
+          next={manualModel ? describeManualModel : () => setInferenceStage("review")}
+          nextLabel="Review defaults"
+          busy={busy}
+          disabled={!model.trim() || (!manualModel && !selectedRecommendation)}
+        />
+      </Frame>
+    );
+  }
+
+  return (
+    <Frame>
+      <Title note="Provider facts and Gents recommendations are shown separately. Customize only the controls supported for this model.">
+        Review inference
+      </Title>
+      <div className="mb-4 rounded-2xl border border-border/60 bg-raised p-4 text-sm">
+        <p className="font-medium">{model}</p>
+        <p className="mt-2 text-xs text-muted-foreground">Provider advertised</p>
+        <dl className="mt-1 grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <dt className="text-muted-foreground">Context window</dt>
+            <dd>{advertised?.context_window?.toLocaleString() ?? "Not advertised"}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Max output</dt>
+            <dd>
+              {advertised?.max_output_tokens?.toLocaleString() ?? "Not advertised"}
+            </dd>
+          </div>
+        </dl>
       </div>
+      {selectedRecommendation && settings ? (
+        <InferenceModelControls
+          recommendation={selectedRecommendation}
+          value={settings}
+          onChange={setSettings}
+          expanded={customize}
+          onExpandedChange={setCustomize}
+        />
+      ) : null}
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       <Nav
-        onBack={initialStep === "inference" ? undefined : () => setStep("agent")}
+        onBack={() => setInferenceStage("model")}
         next={saveInference}
-        nextLabel="Next"
+        nextLabel="Save and activate"
         busy={busy}
-        disabled={!inferenceReady}
+        disabled={!selectedRecommendation || !settings}
       />
     </Frame>
   );

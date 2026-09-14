@@ -151,6 +151,7 @@ pub struct BackendModelCatalog {
 /// Optional capabilities remain unknown unless discovery or an explicit adapter
 /// contract establishes them. No separate document identity or model profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 pub struct AdvertisedModel {
     pub model_name: String,
     pub display_name: Option<String>,
