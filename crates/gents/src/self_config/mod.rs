@@ -1141,7 +1141,7 @@ async fn persona_preview(
         }
         _ => None,
     };
-    let preset_effective = args.preset.as_deref().and_then(|preset| {
+    let preset_requested = args.preset.as_deref().and_then(|preset| {
         crate::agent::persona_presets::preset_fields(preset).map(|fields| {
             json!({
                 "file_mode": fields.file_tools_mode,
@@ -1170,10 +1170,10 @@ async fn persona_preview(
             "preset": args.preset,
             "make_default": args.make_default,
         },
-        "preset_effective": preset_effective,
+        "preset_requested": preset_requested,
         "inherited_config": inherited_config,
         "process_ceiling": process_ceiling,
-        "note": "Preview validates the complete intent without writing. Applied create IDs use the admitted request key and will differ from these preview-only IDs.",
+        "note": "Preview checks request admission without writing; it does not verify materialization or runtime readiness. Preset values are requested authority, narrowed by the process ceiling at runtime. Inspect the applied behavior for effective authority. Applied create IDs use the admitted request key and will differ from these preview-only IDs.",
     }))
     .map_err(|error| anyhow!("serialize behavior preview: {error}"))
 }

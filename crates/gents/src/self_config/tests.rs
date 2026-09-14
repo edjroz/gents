@@ -535,6 +535,12 @@ async fn persona_create_authors_row_and_applies_after_manual_tick() {
     let admitted_preview: Value = serde_json::from_str(&admitted_preview).unwrap();
     assert_eq!(admitted_preview["committed"], false);
     assert_eq!(admitted_preview["admitted"], true);
+    assert!(admitted_preview.get("preset_requested").is_some());
+    assert!(admitted_preview.get("preset_effective").is_none());
+    assert!(admitted_preview["note"]
+        .as_str()
+        .unwrap()
+        .contains("does not verify materialization"));
     assert!(load_persona_rows_for_test(&node, &agent_did)
         .await
         .is_empty());

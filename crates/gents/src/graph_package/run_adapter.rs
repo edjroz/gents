@@ -65,13 +65,28 @@ fn resolve_repository(
     if git_output(&canonical, &["rev-parse", "--is-inside-work-tree"])? != "true" {
         anyhow::bail!("{} is not a Git work tree", canonical.display());
     }
+    // Git discovers enclosing repositories. A permitted subdirectory must not
+    // grant review access to the rest of a repository outside the ceiling.
+    let repository_root =
+        std::fs::canonicalize(git_output(&canonical, &["rev-parse", "--show-toplevel"])?)?;
+    crate::workspace::require_under_ceiling(&repository_root, process_root)?;
     let base_sha = git_output(
         &canonical,
-        &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{base}^{{commit}}"),
+        ],
     )?;
     let head_sha = git_output(
         &canonical,
-        &["rev-parse", "--verify", &format!("{head}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{head}^{{commit}}"),
+        ],
     )?;
     Ok((canonical, base_sha, head_sha))
 }
@@ -270,6 +285,20 @@ pub async fn prepare_code_review_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_cannot_escape_ceiling_through_enclosing_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        git_output(directory.path(), &["init", "--quiet"]).unwrap();
+        let permitted = directory.path().join("permitted");
+        std::fs::create_dir(&permitted).unwrap();
+        let permitted = std::fs::canonicalize(permitted).unwrap();
+        let error = resolve_repository(&permitted, "HEAD", "HEAD", Some(&permitted)).unwrap_err();
+        assert!(
+            error.to_string().contains("escapes operator tool root"),
+            "{error:#}"
+        );
+    }
 
     #[test]
     fn evidence_pages_are_complete_and_bounded() {
