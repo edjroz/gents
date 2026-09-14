@@ -495,7 +495,7 @@ describe("configuration panels", () => {
     ]);
   });
 
-  it("routes valid edits through every panel's canonical save command", async () => {
+  describe("routes valid edits through each panel's canonical save command", () => {
     const cases: Array<{
       renderPanel: (shell: Shell) => React.ReactElement;
       field: string;
@@ -585,12 +585,14 @@ describe("configuration panels", () => {
     ];
 
     for (const testCase of cases) {
-      const { api, shell } = harness();
-      const view = render(testCase.renderPanel(shell));
-      const user = await replace(testCase.field, testCase.value);
-      await user.click(screen.getByRole("button", { name: "Save changes" }));
-      expect(api[testCase.method], testCase.method).toHaveBeenCalledTimes(1);
-      view.unmount();
+      it(testCase.value, async () => {
+        const { api, shell } = harness();
+        const view = render(testCase.renderPanel(shell));
+        const user = await replace(testCase.field, testCase.value);
+        await user.click(screen.getByRole("button", { name: "Save changes" }));
+        expect(api[testCase.method], testCase.method).toHaveBeenCalledTimes(1);
+        view.unmount();
+      });
     }
   });
 
