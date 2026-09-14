@@ -18,6 +18,7 @@ import type {
   InferenceBackendView,
   InterruptRequestResult,
   MCPServiceHealthView,
+  ManagedServerStatus,
   McpServiceProbeResult,
   SubagentTreeView,
   SyncHealthView,
@@ -253,6 +254,19 @@ export function createDesktopUiHarness(
   }
   let removed = false;
   let provisioned = scenario !== "empty-fleet";
+  let pairingStatusReads = 0;
+  let managedServer: ManagedServerStatus = {
+    state: "disabled",
+    autoStart: false,
+    agentName: null,
+    agentDid: null,
+    graphql: null,
+    effectiveToolCeiling: null,
+    effectiveToolRoot: null,
+    suggestedToolRoot: "/tmp/gents-bombadil/workspace",
+    pairingReady: false,
+    error: null,
+  };
   let p2pStatus: "healthy" | "degraded" | "wedged" =
     scenario === "sync-offline" ? "wedged" : "healthy";
   let syncHealth: SyncHealthView = initialSyncHealth(scenario);
@@ -772,6 +786,7 @@ export function createDesktopUiHarness(
       provisioned = true;
       deployment = {
         ...deployment,
+        source: "local",
         label,
         agentPrincipal: { ...deployment.agentPrincipal, displayName: label },
       };
@@ -801,6 +816,78 @@ export function createDesktopUiHarness(
       notify("runtime");
       return snapshot();
     },
+    ...(scenario === "empty-fleet"
+      ? ({
+          async managedServerStatus() {
+            if (managedServer.state === "running" && !managedServer.pairingReady) {
+              pairingStatusReads += 1;
+              if (pairingStatusReads >= 2) {
+                managedServer = { ...managedServer, pairingReady: true };
+              }
+            }
+            return clone(managedServer);
+          },
+          async startManagedServer(agentName, authority) {
+            pairingStatusReads = 0;
+            managedServer = {
+              ...managedServer,
+              state: "running",
+              agentName,
+              agentDid: AGENT_DID,
+              graphql: "http://127.0.0.1:9181/api/v0/graphql",
+              effectiveToolCeiling:
+                authority?.toolCeiling ??
+                managedServer.effectiveToolCeiling ??
+                "readwrite",
+              effectiveToolRoot:
+                authority !== undefined
+                  ? authority.toolRoot
+                  : (managedServer.effectiveToolRoot ??
+                    "/tmp/gents-bombadil/workspace"),
+              pairingReady: false,
+              error: null,
+            };
+            return clone(managedServer);
+          },
+          async commitManagedServerAutoStart(agentName) {
+            managedServer = { ...managedServer, autoStart: true, agentName };
+            return clone(managedServer);
+          },
+          async restartManagedServer(agentName, authority) {
+            pairingStatusReads = 0;
+            managedServer = {
+              ...managedServer,
+              state: "running",
+              agentName,
+              agentDid: AGENT_DID,
+              effectiveToolCeiling: authority.toolCeiling,
+              effectiveToolRoot: authority.toolRoot,
+              pairingReady: false,
+              error: null,
+            };
+            return clone(managedServer);
+          },
+          async validateManagedServerRoot(path) {
+            if (path.includes("missing")) {
+              throw new Error(`Cannot access ${path}: directory does not exist`);
+            }
+            return path.trim();
+          },
+          async stopManagedServer(disableAutoStart) {
+            managedServer = {
+              ...managedServer,
+              state: disableAutoStart ? "disabled" : "stopped",
+              autoStart: disableAutoStart ? false : managedServer.autoStart,
+              agentDid: null,
+              graphql: null,
+              effectiveToolCeiling: null,
+              effectiveToolRoot: null,
+              pairingReady: false,
+            };
+            return clone(managedServer);
+          },
+        } satisfies Partial<DesktopApiAdapter>)
+      : {}),
     async setSelectedAgent() {
       return undefined;
     },

@@ -85,6 +85,10 @@ describe("desktop startup screen", () => {
       agentName: null;
       agentDid: null;
       graphql: null;
+      effectiveToolCeiling: null;
+      effectiveToolRoot: null;
+      suggestedToolRoot: string;
+      pairingReady: false;
       error: null;
     }>();
     const base = bridge(
@@ -119,6 +123,10 @@ describe("desktop startup screen", () => {
       agentName: null,
       agentDid: null,
       graphql: null,
+      effectiveToolCeiling: null,
+      effectiveToolRoot: null,
+      suggestedToolRoot: "/Users/test",
+      pairingReady: false,
       error: null,
     });
     await waitFor(() => {

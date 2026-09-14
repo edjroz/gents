@@ -9,6 +9,8 @@ const COMMANDS: &[&str] = &[
     "desktop_managed_server_status",
     "desktop_managed_server_start",
     "desktop_managed_server_stop",
+    "desktop_managed_server_restart",
+    "desktop_managed_server_validate_root",
     "desktop_peer_remove",
     "desktop_peer_rename",
     "desktop_peer_status_fetch",

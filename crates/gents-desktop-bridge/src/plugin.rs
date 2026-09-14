@@ -31,6 +31,8 @@ pub fn init<R: Runtime>(config: BridgeConfig) -> TauriPlugin<R> {
             tauri_commands::managed_server::desktop_managed_server_status,
             tauri_commands::managed_server::desktop_managed_server_start,
             tauri_commands::managed_server::desktop_managed_server_stop,
+            tauri_commands::managed_server::desktop_managed_server_restart,
+            tauri_commands::managed_server::desktop_managed_server_validate_root,
             tauri_commands::peers::desktop_peer_remove,
             tauri_commands::peers::desktop_peer_rename,
             tauri_commands::peers::desktop_peer_status_fetch,
