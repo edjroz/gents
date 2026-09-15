@@ -86,6 +86,7 @@ export function useShell(
       snapshot: d.snapshot,
       error: d.error,
       activityStatus: d.activityStatus,
+      nonEmptyContentSendStatus: d.nonEmptyContentSendStatus,
       interruptVisible: d.interruptVisible,
       activeRequestId: d.activeRequestId,
       sending: d.sending || chatSubmitting,
@@ -111,6 +112,8 @@ export function useShell(
         args: string;
       }[],
       sendMessage,
+      captureComposeIntent: d.captureComposeIntent,
+      acceptsComposeIntent: d.acceptsComposeIntent,
       retryMessage: d.onRetryMessage,
       resolveHold: async (_id: string, _approve: boolean) => {},
       dismissMailboxItem: d.onDismissMailboxItem,
