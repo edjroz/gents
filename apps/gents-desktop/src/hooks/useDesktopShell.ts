@@ -64,7 +64,7 @@ export function useDesktopShell({
     lastP2PAutoRestartAt,
     lastObservedP2PHealth,
     snapshot,
-    beginSnapshotPublication,
+    mutateSnapshot,
     startupPhase,
     loading,
     starting,
@@ -197,7 +197,7 @@ export function useDesktopShell({
     sending,
     setLocalWorkflow,
     setError,
-    setSelectedAgentDid,
+    setSelectedAgentDid: selectAgent,
     setSelectedBehaviorId,
     snapshot,
     starting,
@@ -213,13 +213,15 @@ export function useDesktopShell({
     onRepairP2P,
   } = createDesktopShellPeerActions({
     api,
-    beginSnapshotPublication,
+    mutateSnapshot,
+    refreshSnapshot,
     snapshot,
     ensureDesktopClientStarted,
     setAddingPeer,
     setError,
     setRepairingP2P,
-    setSelectedAgentDid,
+    selectedAgentDidRef,
+    selectAgent,
     setStarting,
   });
   const foregroundRepairRef = useRef(onRepairP2P);
@@ -249,6 +251,7 @@ export function useDesktopShell({
     onApplyConfigComponents,
     onSaveBehaviorConfig,
     onDeleteSkillConfig,
+    onDeleteContextConfig,
     onDeleteTaskConfig,
     onDeleteScheduleConfig,
     onDeleteEventSourceConfig,
@@ -270,12 +273,10 @@ export function useDesktopShell({
     onTestToolService,
   } = createDesktopShellConfigActions({
     api,
-    beginSnapshotPublication,
+    mutateSnapshot,
     setError,
     setSavingBehaviorConfig,
     setSavingConfig,
-    setSelectedAgentDid,
-    setSelectedBehaviorId,
   });
 
   const {
@@ -322,17 +323,14 @@ export function useDesktopShell({
     onSaveTriggerConfig,
   } = createDesktopShellTaskActions({
     acceptsComposeIntent,
-    advanceComposeIntent,
     api,
-    beginSnapshotPublication,
+    mutateSnapshot,
     captureComposeIntent,
-    refreshSession,
     refreshSnapshot,
     runningTaskCountRef,
     setError,
     setRunningTask,
     setSavingConfig,
-    setSelectedSessionId,
   });
 
   function onDismissError() {
@@ -410,6 +408,7 @@ export function useDesktopShell({
     onSaveAgentConfig,
     onSaveBehaviorConfig,
     onDeleteSkillConfig,
+    onDeleteContextConfig,
     onDeleteTaskConfig,
     onDeleteScheduleConfig,
     onDeleteEventSourceConfig,

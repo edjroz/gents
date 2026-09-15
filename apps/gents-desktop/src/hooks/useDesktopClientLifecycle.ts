@@ -13,7 +13,10 @@ import type {
   P2PHealth,
 } from "@source-inc/gents-desktop-client";
 import { delay, logShellEvent, timingConfig } from "./desktopShellRuntime";
-import type { DesktopStartupPhase } from "../lib/loadingStatus";
+import {
+  projectStartupPhaseAfterSnapshot,
+  type DesktopStartupPhase,
+} from "../lib/loadingStatus";
 import { restoreManagedServer } from "./managedServerLifecycle";
 import { createSnapshotPublicationOwner } from "./desktopSnapshotPublication";
 
@@ -42,7 +45,6 @@ export function useDesktopClientLifecycle({
   const autoRestartInFlight = useRef(false);
   const lastP2PAutoRestartAt = useRef<number | null>(null);
   const lastObservedP2PHealth = useRef<P2PHealth | null>(null);
-  const snapshotRefreshGeneration = useRef(0);
   const initialStartupPhase: DesktopStartupPhase = supportsManagedServer
     ? "checking-managed-server"
     : "loading-configuration";
@@ -57,7 +59,6 @@ export function useDesktopClientLifecycle({
   >(undefined);
   snapshotPublicationRef.current ??= createSnapshotPublicationOwner((next) => {
     setSnapshot(next);
-    snapshotRefreshGeneration.current += 1;
     setLoading(false);
     resolveStartupPhase(next);
   });
@@ -73,27 +74,15 @@ export function useDesktopClientLifecycle({
   }
 
   function resolveStartupPhase(next: DesktopClientSnapshot) {
-    if (
-      startupPhaseRef.current !== "loading-configuration" &&
-      startupPhaseRef.current !== "starting-client"
-    ) {
-      return;
-    }
-    setStartupPhase(
-      next.client ||
-        (!next.bootstrap.clientStateExists && next.bootstrap.savedPeers.length === 0)
-        ? "ready"
-        : "starting-client",
+    const phase = projectStartupPhaseAfterSnapshot(
+      startupPhaseRef.current,
+      Boolean(next.client),
+      !next.bootstrap.clientStateExists && next.bootstrap.savedPeers.length === 0,
     );
-  }
-
-  function beginSnapshotPublication() {
-    return snapshotPublicationRef.current!.begin();
+    if (phase !== startupPhaseRef.current) setStartupPhase(phase);
   }
 
   async function refreshSnapshot() {
-    snapshotRefreshGeneration.current += 1;
-    const refreshGeneration = snapshotRefreshGeneration.current;
     const publish = snapshotPublicationRef.current!.begin();
     setLoading(true);
     try {
@@ -108,10 +97,20 @@ export function useDesktopClientLifecycle({
       setError(String(error));
       if (startupPhaseRef.current === "loading-configuration") {
         setStartupPhase("configuration-error");
+      } else if (startupPhaseRef.current === "starting-client") {
+        setStartupPhase("client-error");
       }
     } finally {
-      if (snapshotRefreshGeneration.current === refreshGeneration) setLoading(false);
+      if (publish.isCurrent()) setLoading(false);
     }
+  }
+
+  async function mutateSnapshot<T>(operation: () => Promise<T>): Promise<T> {
+    const accepted = await operation();
+    // Mutation payloads can predate reads issued while they were pending.
+    // Observe committed state after acceptance; failed writes don't revoke reads.
+    await refreshSnapshot();
+    return accepted;
   }
 
   async function ensureDesktopClientStarted(): Promise<DesktopClientSnapshot | null> {
@@ -119,18 +118,18 @@ export function useDesktopClientLifecycle({
     setStarting(true);
     setError(null);
     const pending = (async () => {
-      const publish = beginSnapshotPublication();
+      const isCurrent = snapshotPublicationRef.current!.checkpoint();
       try {
-        const next = await api.startDesktopClient();
-        publish.publish(next);
-        return next;
+        return await mutateSnapshot(() => api.startDesktopClient());
       } catch (error) {
-        if (publish.isCurrent()) setError(String(error));
+        if (isCurrent() || !snapshotPublicationRef.current!.snapshot?.client) {
+          setError(String(error));
+          if (startupPhaseRef.current === "starting-client") {
+            setStartupPhase("client-error");
+          }
+        }
         return null;
       } finally {
-        if (publish.isCurrent() && startupPhaseRef.current === "starting-client") {
-          setStartupPhase("client-error");
-        }
         startClientInFlight.current = null;
         setStarting(false);
       }
@@ -185,7 +184,7 @@ export function useDesktopClientLifecycle({
     setStopping(true);
     setStarting(true);
     setError(null);
-    const publish = beginSnapshotPublication();
+    const isCurrent = snapshotPublicationRef.current!.checkpoint();
     try {
       let next: DesktopClientSnapshot | null = null;
       for (
@@ -206,14 +205,15 @@ export function useDesktopClientLifecycle({
         }
       }
       if (!next) throw new Error("desktop restart returned no snapshot");
-      const published = publish.publish(next);
-      if (published && sessionId) await refreshSession(sessionId);
-      else if (published && selectedSessionIdRef.current === sessionId)
-        setSession(null);
+      await refreshSnapshot();
+      if (selectedSessionIdRef.current === sessionId) {
+        if (sessionId) await refreshSession(sessionId);
+        else setSession(null);
+      }
       logShellEvent(`restart complete reason="${reason}"`);
     } catch (error) {
       logShellEvent(`restart failed reason="${reason}" error=${String(error)}`);
-      if (publish.isCurrent()) {
+      if (isCurrent() || !snapshotPublicationRef.current!.snapshot?.client) {
         setError(`desktop client restart failed after ${reason}: ${String(error)}`);
       }
     } finally {
@@ -230,7 +230,7 @@ export function useDesktopClientLifecycle({
     lastP2PAutoRestartAt,
     lastObservedP2PHealth,
     snapshot,
-    beginSnapshotPublication,
+    mutateSnapshot,
     startupPhase,
     loading,
     starting,
