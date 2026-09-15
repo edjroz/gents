@@ -50,16 +50,13 @@ import { AgentAvatar } from "@/screens/AgentAvatar";
 import { applyTheme, themePreference } from "@/theme";
 import { Mark } from "@/app/Mark";
 import { openExternalUrl } from "../../../lib/externalLinks";
-import { watchProviderLoginUrl, type OauthProvider } from "@/lib/providerLogin";
 import {
-  ManagedRuntimeAuthorityPicker,
-  ManagedRuntimeAuthorityReview,
-  authorityForPreset,
-} from "@/components/ManagedRuntimeAuthority";
-import {
-  authoritiesEqual,
-  type ManagedRuntimePreset,
-} from "@/lib/managedRuntimeAuthority";
+  watchProviderLoginUrl,
+  PROVIDER_CREDENTIAL_KIND,
+  type OauthProvider,
+} from "@/lib/providerLogin";
+import { ManagedRuntimeAuthorityPicker } from "@/components/ManagedRuntimeAuthority";
+import { authoritiesEqual, authorityForSelection } from "@/lib/managedRuntimeAuthority";
 import {
   currentInferenceDiscovery,
   inferenceDiscoveryKey,
@@ -72,18 +69,9 @@ import {
   type InferenceSettingsDraft,
 } from "../inference/InferenceModelControls";
 
-type Step =
-  | "welcome"
-  | "remote"
-  | "agent"
-  | "authority"
-  | "authority-review"
-  | "starting"
-  | "inference"
-  | "ready";
+type Step = "welcome" | "starting" | "inference";
 
 type ProviderId = InferenceProviderId;
-type InferenceStage = "provider" | "connect" | "model" | "review";
 type ConnectionDraft = {
   authMethod: InferenceAuthMethod;
   endpoint: string;
@@ -116,13 +104,25 @@ const oauthProviderFor = (method: InferenceAuthMethod): OauthProvider | null =>
         ? "grok"
         : null;
 
-function Frame({ children }: { children: React.ReactNode }) {
+function Frame({
+  children,
+  embedded = false,
+}: {
+  children: React.ReactNode;
+  embedded?: boolean;
+}) {
   const [theme, setTheme] = useState(themePreference);
   const flip = () => {
     const next = theme === "dark" ? "light" : "dark";
     applyTheme(next);
     setTheme(next);
   };
+  if (embedded)
+    return (
+      <div className="w-full min-w-0 max-w-xl py-2" data-testid="inference-setup-panel">
+        {children}
+      </div>
+    );
   return (
     <ScrollArea
       className="viewport-frame relative bg-background text-foreground"
@@ -130,7 +130,7 @@ function Frame({ children }: { children: React.ReactNode }) {
     >
       <div className="px-8">
         {/* anchored a fixed way down, not centred: a step can grow or shrink without moving its title */}
-        <div className="mx-auto w-full max-w-xl pt-[22vh] pb-16">{children}</div>
+        <div className="mx-auto w-full max-w-xl pt-[10vh] pb-8">{children}</div>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -162,6 +162,8 @@ function Option({
   icon: Icon,
   logo,
   testId,
+  children,
+  disabled,
 }: {
   selected: boolean;
   onSelect: () => void;
@@ -170,38 +172,50 @@ function Option({
   icon: typeof Server;
   logo?: string;
   testId?: string;
+  children?: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      data-testid={testId}
-      onClick={onSelect}
+    <div
       className={cn(
-        "flex w-full items-center gap-3 rounded-2xl border bg-raised px-4 py-3.5 text-left transition-shadow",
-        selected
-          ? "border-brand ring-1 ring-brand"
-          : "border-border/60 hover:bg-accent",
+        "rounded-2xl border bg-raised",
+        selected ? "border-brand ring-1 ring-brand" : "border-border/60",
       )}
     >
-      {selected ? (
-        <CircleCheck className="size-4 shrink-0 text-foreground" />
-      ) : (
-        <Circle className="size-4 shrink-0 text-muted-foreground" />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium">{title}</span>
-        {hint && (
-          <span className="block truncate text-xs text-muted-foreground">{hint}</span>
+      <button
+        type="button"
+        role="radio"
+        disabled={disabled}
+        aria-checked={selected}
+        data-testid={testId}
+        onClick={onSelect}
+        className="flex w-full items-center gap-3 rounded-2xl px-4 py-3.5 text-left hover:bg-accent"
+      >
+        {selected ? (
+          <CircleCheck className="size-4 shrink-0 text-foreground" />
+        ) : (
+          <Circle className="size-4 shrink-0 text-muted-foreground" />
         )}
-      </span>
-      {logo ? (
-        <img src={logo} alt="" className="size-5 shrink-0 object-contain dark:invert" />
-      ) : (
-        <Icon className="size-5 shrink-0 text-heading" />
-      )}
-    </button>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{title}</span>
+          {hint && (
+            <span className="block truncate text-xs text-muted-foreground">{hint}</span>
+          )}
+        </span>
+        {logo ? (
+          <img
+            src={logo}
+            alt=""
+            className="size-5 shrink-0 object-contain dark:invert"
+          />
+        ) : (
+          <Icon className="size-5 shrink-0 text-heading" />
+        )}
+      </button>
+      {selected && children ? (
+        <div className="grid gap-3 border-t border-border/60 px-4 py-3">{children}</div>
+      ) : null}
+    </div>
   );
 }
 
@@ -267,10 +281,16 @@ export function SetupScreen({
   shell,
   onDone,
   initialStep = "welcome",
+  purpose = "onboarding",
+  agentDid,
+  onCancel,
 }: {
   shell: Shell;
   onDone: (snapshot: DesktopClientSnapshot) => void;
   initialStep?: Step;
+  purpose?: "onboarding" | "add-backend";
+  agentDid?: string;
+  onCancel?: () => void;
 }) {
   const [step, setStep] = useState<Step>(initialStep);
   const allowLocal = !isMobileTauriShell();
@@ -283,42 +303,76 @@ export function SetupScreen({
   const [homeRoot, setHomeRoot] = useState<string | null>(
     api.managedServerStatus ? null : (shell.snapshot?.bootstrap.initToolRoot ?? null),
   );
-  const [authorityPreset, setAuthorityPreset] =
-    useState<ManagedRuntimePreset>("full-home");
-  const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+  const [toolCeiling, setToolCeiling] =
+    useState<ManagedServerAuthorityInput["toolCeiling"]>("readwrite");
+  const [selectedDirectory, setSelectedDirectory] = useState<string | null | undefined>(
+    undefined,
+  );
   const [authorityError, setAuthorityError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<Exclude<DesktopStartupPhase, "ready">>(
     "checking-managed-server",
   );
-  const [inferenceStage, setInferenceStage] = useState<InferenceStage>("provider");
   const [catalog, setCatalog] = useState<InferenceSetupCatalog | null>(null);
   const [provider, setProvider] = useState<ProviderId>("openai");
   const [connections, setConnections] = useState<
     Partial<Record<ProviderId, ConnectionDraft>>
   >({});
   const [signedIn, setSignedIn] = useState<Partial<Record<ProviderId, string>>>({});
+  const setupAgentDid =
+    agentDid ??
+    shell.selectedDeployment?.agentDid ??
+    shell.snapshot?.client?.deployments[0]?.agentDid;
+  useEffect(() => {
+    if (!setupAgentDid || !api.listProviderAccounts) return;
+    let cancelled = false;
+    void api
+      .listProviderAccounts(setupAgentDid)
+      .then((accounts) => {
+        if (cancelled) return;
+        setSignedIn((current) => {
+          const next = { ...current };
+          for (const [providerId, credentialKind] of Object.entries(
+            PROVIDER_CREDENTIAL_KIND,
+          )) {
+            const account = accounts.find(
+              (entry) => entry.enabled && entry.provider === credentialKind,
+            );
+            if (account) next[providerId as OauthProvider] = account.credentialId;
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        /* Sign-in remains available if account lookup fails. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, setupAgentDid]);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const root = shell.snapshot?.bootstrap.defaultAgentHome ?? "~/.gents";
-  const authority = homeRoot
-    ? authorityForPreset(authorityPreset, homeRoot, selectedDirectory)
-    : null;
+  const toolRoot = selectedDirectory === undefined ? homeRoot : selectedDirectory;
+  const authority = authorityForSelection(toolCeiling, toolRoot);
 
   useEffect(() => {
-    if (step !== "authority" || !api.managedServerStatus || homeRoot) return;
+    if (step !== "welcome" || !allowLocal || !api.managedServerStatus || homeRoot)
+      return;
     const pending = api.managedServerStatus();
     if (!pending) return;
     void pending
       .then((status) => {
         if (status.suggestedToolRoot) setHomeRoot(status.suggestedToolRoot);
+        else setAuthorityError("The user home directory is unavailable.");
       })
       .catch((cause) =>
         setAuthorityError(cause instanceof Error ? cause.message : String(cause)),
       );
-  }, [api, homeRoot, step]);
+  }, [api, homeRoot, step, allowLocal]);
   const [discovery, setDiscovery] = useState<InferenceDiscoveryResult | null>(null);
   const [modelSearch, setModelSearch] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(true);
   const [model, setModel] = useState("");
   const [manualModel, setManualModel] = useState(false);
   const [settings, setSettings] = useState<InferenceSettingsDraft | null>(null);
@@ -376,7 +430,7 @@ export function SetupScreen({
           ? "Choose and validate an existing directory."
           : "The user home directory is still being resolved.",
       );
-      setStep("authority");
+      setStep("welcome");
       return;
     }
     setBusy(true);
@@ -453,9 +507,7 @@ export function SetupScreen({
     try {
       unlisten = await watchProviderLoginUrl(oauthProvider, setAuthUrl);
       const snapshot = await api.fetchDesktopSnapshot();
-      const agentDid =
-        shell.snapshot?.client?.deployments[0]?.agentDid ??
-        snapshot.client?.deployments[0]?.agentDid;
+      const agentDid = setupAgentDid ?? snapshot.client?.deployments[0]?.agentDid;
       if (!agentDid) throw new Error("No agent to sign in");
       const result =
         oauthProvider === "openai"
@@ -502,18 +554,9 @@ export function SetupScreen({
   };
 
   const discoverModels = async () => {
-    if (!connection) return;
+    if (!connection || busy) return;
     setBusy(true);
     setError(null);
-    const snapshot = await api.fetchDesktopSnapshot();
-    const agentDid =
-      shell.snapshot?.client?.deployments[0]?.agentDid ??
-      snapshot.client?.deployments[0]?.agentDid;
-    if (!agentDid) {
-      setBusy(false);
-      setError("No agent to configure");
-      return;
-    }
     const requestKey = inferenceDiscoveryKey(
       ++discoveryRevision.current,
       provider,
@@ -522,6 +565,13 @@ export function SetupScreen({
     );
     currentDiscoveryKey.current = requestKey;
     try {
+      const snapshot = await api.fetchDesktopSnapshot();
+      const agentDid = setupAgentDid ?? snapshot.client?.deployments[0]?.agentDid;
+      if (!agentDid) {
+        setBusy(false);
+        setError("No agent to configure");
+        return;
+      }
       const result = await api.discoverInferenceModels({
         requestKey,
         agentDid,
@@ -538,7 +588,6 @@ export function SetupScreen({
       setModel("");
       setSelectedRecommendation(null);
       setSettings(null);
-      setInferenceStage("model");
     } catch (cause) {
       if (currentDiscoveryKey.current !== requestKey) return;
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -552,6 +601,7 @@ export function SetupScreen({
     setSelectedRecommendation(option.recommendation);
     setSettings(recommendedInferenceSettings(option.recommendation));
     setCustomize(false);
+    setModelPickerOpen(false);
   };
 
   const describeManualModel = async () => {
@@ -570,7 +620,6 @@ export function SetupScreen({
       });
       setSelectedRecommendation(recommendation);
       setSettings(recommendedInferenceSettings(recommendation));
-      setInferenceStage("review");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -584,11 +633,13 @@ export function SetupScreen({
     const settingsError = validateInferenceSettings(selectedRecommendation, settings);
     if (settingsError) throw new Error(settingsError);
     const snapshot = await api.fetchDesktopSnapshot();
-    const deployment =
-      shell.snapshot?.client?.deployments[0] ?? snapshot.client?.deployments[0];
+    const deployment = snapshot.client?.deployments.find(
+      (candidate) => candidate.agentDid === setupAgentDid,
+    );
     if (!deployment) throw new Error("No agent to configure");
 
     const plan = buildInferenceSetupPlan({
+      purpose,
       deployment,
       provider,
       apiKey: connection.apiKey,
@@ -611,9 +662,7 @@ export function SetupScreen({
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const snapshot = await api.fetchDesktopSnapshot();
       const deployment = snapshot.client?.deployments.find(
-        (candidate) =>
-          candidate.agentDid === shell.selectedDeployment?.agentDid ||
-          candidate.agentDid === snapshot.client?.deployments[0]?.agentDid,
+        (candidate) => candidate.agentDid === setupAgentDid,
       );
       const bound = deployment?.behaviorConfigs.find(
         (behavior) =>
@@ -623,11 +672,24 @@ export function SetupScreen({
       const ready = deployment?.behaviorReadiness.behaviors.some(
         (status) => status.state === "ready" && status.behaviorId === defaultBehaviorId,
       );
-      if (bound && ready) return snapshot;
+      const savedProfile = deployment?.inferenceProfiles.find(
+        (profile) => profile.profile_id === profileId,
+      );
+      const savedBackend = deployment?.inferenceBackends.find(
+        (backend) => backend.backendId === savedProfile?.backend_id,
+      );
+      const savedSelection =
+        savedProfile?.model_name === model.trim() &&
+        (savedProfile?.reasoning_effort ?? null) ===
+          (settings?.reasoningEffort || null) &&
+        savedBackend?.providerKind === discovery?.providerKind &&
+        savedBackend?.endpoint === discovery?.effectiveEndpoint;
+      if (savedSelection && (purpose === "add-backend" || (bound && ready)))
+        return snapshot;
       await new Promise((resolve) => window.setTimeout(resolve, 250));
     }
     throw new Error(
-      "Configuration was saved, but the managed runtime has not reported the Setup behavior active yet.",
+      "The runtime has not confirmed the saved inference configuration. Your selection is retained; retry saving.",
     );
   };
 
@@ -636,8 +698,8 @@ export function SetupScreen({
     setError(null);
     try {
       const { profileId, defaultBehaviorId } = await persistInference();
-      await waitForSelectedBehavior(profileId, defaultBehaviorId);
-      setStep("ready");
+      const snapshot = await waitForSelectedBehavior(profileId, defaultBehaviorId);
+      onDone(snapshot);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -646,7 +708,7 @@ export function SetupScreen({
   };
 
   const pickProvider = (id: ProviderId) => {
-    if (busy) cancelSignIn();
+    if (busy || id === provider) return;
     setProvider(id);
     setAuthUrl(null);
     setError(null);
@@ -667,7 +729,67 @@ export function SetupScreen({
               title="Local agent"
               hint="Create an agent on this Mac."
               icon={Server}
-            />
+            >
+              <div className="flex items-end gap-3">
+                <AgentAvatar name={name} className="mb-1 size-8 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <Field label="Agent name">
+                    <Input
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                    />
+                  </Field>
+                </div>
+              </div>
+              {homeRoot ? (
+                <ManagedRuntimeAuthorityPicker
+                  home={homeRoot}
+                  toolCeiling={toolCeiling}
+                  toolRoot={toolRoot}
+                  onCeilingChange={setToolCeiling}
+                  onRootChange={setSelectedDirectory}
+                  validateRoot={api.validateManagedServerRoot}
+                  error={authorityError}
+                  onError={setAuthorityError}
+                />
+              ) : (
+                <div className="grid gap-2 text-sm text-muted-foreground">
+                  {authorityError ? (
+                    <>
+                      <p role="alert" className="text-destructive">
+                        {authorityError}
+                      </p>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setAuthorityError(null);
+                          void api
+                            .managedServerStatus?.()
+                            .then((status) => {
+                              if (status.suggestedToolRoot)
+                                setHomeRoot(status.suggestedToolRoot);
+                              else
+                                setAuthorityError(
+                                  "The user home directory is unavailable.",
+                                );
+                            })
+                            .catch((cause) => setAuthorityError(String(cause)));
+                        }}
+                      >
+                        Try again
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="flex items-center gap-2">
+                      <Spinner /> Resolving your home directory…
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="break-all text-xs text-muted-foreground">
+                Agent data: <span className="font-mono">{root}</span>
+              </p>
+            </Option>
           )}
           <Option
             selected={where === "remote"}
@@ -675,143 +797,35 @@ export function SetupScreen({
             title="Remote connect"
             hint="Join a Gents server someone else runs."
             icon={Wifi}
-          />
-        </div>
-        <Nav next={() => setStep(where === "local" ? "agent" : "remote")} />
-      </Frame>
-    );
-  }
-  if (step === "remote") {
-    return (
-      <Frame>
-        <Title note="The server's status address. Its admin approves the enrolment.">
-          Connect to a server
-        </Title>
-        <Input
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          placeholder="https://gents.example.net:8787"
-          autoFocus
-        />
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          onBack={() => setStep("welcome")}
-          next={enrol}
-          nextLabel="Request access"
-          busy={busy}
-          disabled={!address.trim()}
-        />
-      </Frame>
-    );
-  }
-  if (step === "agent") {
-    return (
-      <Frame>
-        <div className="mb-4 flex items-center gap-1">
-          <AgentAvatar name={name} className="size-9" />
-        </div>
-        <Title note="Its name is how it appears everywhere; its home is where its documents live.">
-          Configure your agent
-        </Title>
-        <div className="rounded-2xl border border-border/60 bg-raised p-4">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            aria-label="Agent name"
-            autoFocus
-          />
-          <p className="mt-3 font-mono text-xs text-muted-foreground">
-            root: <span className="text-foreground">{root}</span>
-          </p>
-        </div>
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          onBack={() => setStep("welcome")}
-          next={() => setStep("authority")}
-          disabled={!name.trim()}
-        />
-      </Frame>
-    );
-  }
-  if (step === "authority") {
-    return (
-      <Frame>
-        <Title note="This is the most access any behavior can receive. You can make individual behaviors narrower later.">
-          What can the hosted agent do on this computer?
-        </Title>
-        {homeRoot ? (
-          <ManagedRuntimeAuthorityPicker
-            home={homeRoot}
-            preset={authorityPreset}
-            selectedDirectory={selectedDirectory}
-            onPresetChange={setAuthorityPreset}
-            onDirectoryChange={setSelectedDirectory}
-            validateRoot={api.validateManagedServerRoot}
-            error={authorityError}
-            onError={setAuthorityError}
-          />
-        ) : (
-          <div className="grid gap-3">
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner /> Resolving your home directory…
+          >
+            <Field label="Server address">
+              <Input
+                type="url"
+                value={address}
+                onChange={(event) => setAddress(event.target.value)}
+                placeholder="https://gents.example.net:8787"
+              />
+            </Field>
+            <p className="text-xs text-muted-foreground">
+              Use the server’s status address. Its administrator approves your access
+              request.
             </p>
-            {authorityError ? (
-              <>
-                <p className="text-sm text-destructive">{authorityError}</p>
-                <Button
-                  variant="outline"
-                  className="justify-self-start"
-                  onClick={() => {
-                    setAuthorityError(null);
-                    void api
-                      .managedServerStatus?.()
-                      .then((status) => {
-                        if (status?.suggestedToolRoot) {
-                          setHomeRoot(status.suggestedToolRoot);
-                        }
-                      })
-                      .catch((cause) =>
-                        setAuthorityError(
-                          cause instanceof Error ? cause.message : String(cause),
-                        ),
-                      );
-                  }}
-                >
-                  Try again
-                </Button>
-              </>
-            ) : null}
-          </div>
-        )}
-        <Nav
-          onBack={() => setStep("agent")}
-          next={() => {
-            if (!authority) {
-              setAuthorityError("Choose and validate an existing directory.");
-              return;
-            }
-            setStep("authority-review");
-          }}
-          disabled={!authority}
-        />
-      </Frame>
-    );
-  }
-  if (step === "authority-review" && authority) {
-    return (
-      <Frame>
-        <Title note="The managed runtime will start with exactly these host limits.">
-          Review access
-        </Title>
-        <ManagedRuntimeAuthorityReview authority={authority} />
-        {authorityError ? (
-          <p className="mt-3 text-sm text-destructive">{authorityError}</p>
+          </Option>
+        </div>
+        {error ? (
+          <p role="alert" className="mt-3 text-sm text-destructive">
+            {error}
+          </p>
         ) : null}
         <Nav
-          onBack={() => setStep("authority")}
-          next={createAgent}
-          nextLabel="Start hosted agent"
+          next={where === "local" ? createAgent : enrol}
+          nextLabel={where === "local" ? "Next" : "Request access"}
           busy={busy}
+          disabled={
+            where === "local"
+              ? !name.trim() || !authority || !homeRoot
+              : !address.trim()
+          }
         />
       </Frame>
     );
@@ -819,19 +833,22 @@ export function SetupScreen({
   if (step === "starting") {
     const status = projectStartupLoadingStatus(phase, true);
     const steps: [string, LoadingStepState | null][] = [
-      ["Restore hosted agent", status.managedServerState],
-      ["Read saved connections", status.connectionState],
+      [
+        where === "local" ? "Start hosted agent" : "Connect to server",
+        status.managedServerState,
+      ],
+      ["Load configuration", status.connectionState],
       ["Start secure client", status.clientState],
     ];
     const saying: Record<string, string> = {
-      "checking-managed-server": "Waking the hosted agent…",
-      "loading-configuration": "Teaching the gossip network some manners…",
-      "starting-client": "Turning the secure client on…",
+      "checking-managed-server": "Starting your local agent…",
+      "loading-configuration": "Loading agent configuration…",
+      "starting-client": "Starting the secure client…",
     };
     return (
       <Frame>
         <h1 className="font-heading text-2xl font-medium text-heading">
-          {status.failed ? status.title : "Startup"}
+          {status.failed ? status.title : "Starting"}
         </h1>
         <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
           {status.failed ? null : <Spinner className="text-foreground" />}
@@ -860,48 +877,13 @@ export function SetupScreen({
               variant="brand"
               onClick={() => {
                 setError(null);
-                setStep(where === "local" ? "authority-review" : "remote");
+                setStep("welcome");
               }}
             >
               Try again
             </Button>
           </div>
         )}
-      </Frame>
-    );
-  }
-  if (step === "ready") {
-    const agentName =
-      shell.selectedDeployment?.agentPrincipal.displayName ??
-      (name.trim() || "your agent");
-    const providerTitle = providerOption?.displayName ?? "Inference";
-    return (
-      <Frame>
-        <Mark className="mb-6 h-6 text-ink" />
-        <Title
-          note={`${providerTitle} is connected. The first message starts a conversation with ${agentName}.`}
-        >
-          You’re in
-        </Title>
-        <p className="text-sm text-muted-foreground">
-          Send a message to begin. You can add another provider later from the agent’s
-          inference settings.
-        </p>
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          next={async () => {
-            setBusy(true);
-            try {
-              const snapshot = await api.fetchDesktopSnapshot();
-              onDone(snapshot);
-            } catch (e) {
-              setError(e instanceof Error ? e.message : String(e));
-              setBusy(false);
-            }
-          }}
-          nextLabel="Start chatting"
-          busy={busy}
-        />
       </Frame>
     );
   }
@@ -925,293 +907,330 @@ export function SetupScreen({
       : connection.authMethod === "optional_api_key" || connection.apiKey.trim()),
   );
 
-  if (inferenceStage === "provider") {
-    return (
-      <Frame>
-        <Title note="Choose one provider first. Connection and model choices come next.">
-          Choose an inference provider
-        </Title>
-        {catalog ? (
-          <div
-            className="grid grid-cols-2 gap-3"
-            role="radiogroup"
-            aria-label="Inference provider"
-          >
-            {catalog.providers.map((option) => {
-              const visual = PROVIDER_VISUALS[option.id];
-              return (
-                <Option
-                  key={option.id}
-                  selected={provider === option.id}
-                  onSelect={() => pickProvider(option.id)}
-                  title={option.displayName}
-                  hint={option.description}
-                  icon={visual.icon}
-                  logo={visual.logo}
-                  testId={`setup-provider-${option.id}`}
-                />
-              );
-            })}
+  const authOptions = providerOption?.authOptions ?? [];
+  const providerDetails = (
+    <div className="grid gap-4">
+      <div className="grid gap-3 text-sm">
+        {connection && authOptions.length > 1 ? (
+          <Field label="Connection method">
+            <Select
+              items={authOptions.map((option) => ({
+                value: option.method,
+                label: option.displayName,
+              }))}
+              disabled={busy}
+              value={connection.authMethod}
+              onValueChange={(next) => {
+                if (!next) return;
+                const option = authOptions.find((item) => item.method === next);
+                updateConnection({
+                  authMethod: next as InferenceAuthMethod,
+                  endpoint: option?.defaultEndpoint ?? connection.endpoint,
+                  apiKey: "",
+                });
+              }}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {authOptions.map((option) => (
+                  <SelectItem key={option.method} value={option.method}>
+                    {option.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        ) : null}
+        {oauthProvider ? (
+          <div className="grid gap-3">
+            {signedIn[provider] ? (
+              <p className="flex items-center gap-2">
+                <CircleCheck className="size-4" />
+                Account connected
+              </p>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-muted-foreground">
+                  {authLabel(connection!.authMethod)}
+                </p>
+                <span className="flex gap-2">
+                  {busy ? (
+                    <Button variant="outline" onClick={cancelSignIn}>
+                      Cancel
+                    </Button>
+                  ) : null}
+                  <Button variant="brand" disabled={busy} onClick={signIn}>
+                    {busy ? <Spinner /> : null}
+                    {busy ? "Waiting…" : "Sign in"}
+                  </Button>
+                </span>
+              </div>
+            )}
+            {authUrl ? (
+              <button
+                type="button"
+                className="justify-self-start text-xs underline"
+                onClick={() => void openExternalUrl(authUrl)}
+              >
+                Open the sign-in page
+              </button>
+            ) : null}
           </div>
         ) : (
+          <>
+            <Field
+              label={
+                connection?.authMethod === "optional_api_key"
+                  ? "API key (optional)"
+                  : "API key"
+              }
+            >
+              <Input
+                type="password"
+                disabled={busy}
+                value={connection?.apiKey ?? ""}
+                onChange={(event) => updateConnection({ apiKey: event.target.value })}
+                placeholder="Stored only when you save"
+              />
+            </Field>
+            <Field label="Endpoint">
+              <Input
+                disabled={busy}
+                value={connection?.endpoint ?? ""}
+                className="font-mono"
+                onChange={(event) => updateConnection({ endpoint: event.target.value })}
+              />
+            </Field>
+          </>
+        )}
+      </div>
+      <Button
+        variant="outline"
+        disabled={busy || !connectionReady}
+        onClick={discoverModels}
+      >
+        {busy ? <Spinner /> : null}{" "}
+        {discovery ? "Refresh models" : "Connect and find models"}
+      </Button>
+      {discovery ? (
+        <section
+          className="grid gap-3 border-t border-border/60 pt-4"
+          aria-label="Model selection"
+        >
+          <h2 className="text-sm font-medium">Choose a model</h2>
+          {discovery?.failure ? (
+            <div className="mb-4 rounded-xl border border-destructive/30 p-3">
+              <p className="text-sm text-destructive">{discovery.failure.message}</p>
+              <Button
+                className="mt-3"
+                variant="outline"
+                disabled={busy}
+                onClick={discoverModels}
+              >
+                Retry connection
+              </Button>
+            </div>
+          ) : null}
+          {discovery?.models.length ? (
+            model && !modelPickerOpen ? (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 p-3">
+                <span className="min-w-0 break-words text-sm font-medium">{model}</span>
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setModelPickerOpen(true)}
+                >
+                  Change model
+                </Button>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                <Input
+                  disabled={busy}
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                  placeholder="Search advertised models"
+                  aria-label="Search advertised models"
+                />
+                <div
+                  role="listbox"
+                  aria-label="Advertised models"
+                  className="max-h-40 overflow-y-auto rounded-xl border border-border/60 p-1"
+                >
+                  {filteredModels.map((option) => (
+                    <button
+                      key={option.advertised.model_name}
+                      type="button"
+                      role="option"
+                      disabled={busy}
+                      aria-selected={model === option.advertised.model_name}
+                      className={cn(
+                        "block w-full rounded-lg px-3 py-2 text-left text-sm",
+                        model === option.advertised.model_name
+                          ? "bg-accent text-foreground"
+                          : "hover:bg-accent/60",
+                      )}
+                      onClick={() => chooseModel(option)}
+                    >
+                      <span className="block font-medium">
+                        {option.advertised.display_name ?? option.advertised.model_name}
+                      </span>
+                      {option.advertised.display_name ? (
+                        <span className="block font-mono text-xs text-muted-foreground">
+                          {option.advertised.model_name}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          ) : discovery?.manualEntryAllowed ? (
+            <div className="grid gap-3">
+              <p className="text-sm text-muted-foreground">
+                Model discovery is unavailable. Manual entry is enabled as an explicit
+                fallback and will be saved exactly as entered.
+              </p>
+              <Field label="Manual model identifier">
+                <Input
+                  disabled={busy}
+                  value={model}
+                  onChange={(event) => {
+                    setModel(event.target.value);
+                    setManualModel(true);
+                    setSelectedRecommendation(null);
+                    setSettings(null);
+                  }}
+                  placeholder="Exact served model ID"
+                />
+              </Field>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No discovery result.</p>
+          )}
+          {manualModel && !selectedRecommendation ? (
+            <Button
+              variant="outline"
+              disabled={busy || !model.trim()}
+              onClick={describeManualModel}
+            >
+              {busy ? <Spinner /> : null} Load model defaults
+            </Button>
+          ) : null}
+        </section>
+      ) : null}
+      {selectedRecommendation && settings ? (
+        <section
+          className="grid gap-3 border-t border-border/60 pt-4"
+          aria-label="Model defaults"
+        >
+          <h2 className="text-sm font-medium">Model defaults</h2>
+          <fieldset disabled={busy} className="min-w-0">
+            <div className="mb-4 rounded-2xl border border-border/60 bg-raised p-4 text-sm">
+              <p className="font-medium">{model}</p>
+              <p className="mt-2 text-xs text-muted-foreground">Model limits</p>
+              <dl className="mt-1 grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <dt className="text-muted-foreground">Context window</dt>
+                  <dd>
+                    {(
+                      advertised?.context_window ??
+                      selectedRecommendation.contextWindow?.recommended
+                    )?.toLocaleString() ?? "Not advertised"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">Max output</dt>
+                  <dd>
+                    {discovery?.providerKind === "ChatGptCodex"
+                      ? "Provider managed"
+                      : ((
+                          advertised?.max_output_tokens ??
+                          selectedRecommendation.maxOutputTokens?.max
+                        )?.toLocaleString() ?? "Not advertised")}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+            {selectedRecommendation && settings ? (
+              <InferenceModelControls
+                recommendation={selectedRecommendation}
+                value={settings}
+                onChange={setSettings}
+                expanded={customize}
+                onExpandedChange={setCustomize}
+              />
+            ) : null}
+          </fieldset>
+          <Button
+            data-testid="setup-save-inference"
+            variant="brand"
+            disabled={busy}
+            onClick={saveInference}
+          >
+            {busy ? <Spinner /> : null}{" "}
+            {purpose === "add-backend" ? "Save backend" : "Save and start chatting"}{" "}
+            <ArrowRight />
+          </Button>
+        </section>
+      ) : null}
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <Frame embedded={purpose === "add-backend"}>
+      <Title note="Choose a provider, connect, then select a model and its defaults—all here.">
+        {purpose === "add-backend"
+          ? "Add an inference backend"
+          : "Choose an inference provider"}
+      </Title>
+      {catalog ? (
+        <div className="grid gap-3" role="radiogroup" aria-label="Inference provider">
+          {catalog.providers.map((option) => {
+            const visual = PROVIDER_VISUALS[option.id];
+            return (
+              <Option
+                key={option.id}
+                selected={provider === option.id}
+                disabled={busy}
+                onSelect={() => pickProvider(option.id)}
+                title={option.displayName}
+                hint={option.description}
+                icon={visual.icon}
+                logo={visual.logo}
+                testId={`setup-provider-${option.id}`}
+              >
+                {provider === option.id ? providerDetails : null}
+              </Option>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="grid gap-3">
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <Spinner /> Loading provider options…
           </p>
-        )}
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          onBack={initialStep === "inference" ? undefined : () => setStep("agent")}
-          next={() => setInferenceStage("connect")}
-          disabled={!catalog || !connection}
-        />
-      </Frame>
-    );
-  }
-
-  if (inferenceStage === "connect") {
-    const authOptions = providerOption?.authOptions ?? [];
-    return (
-      <Frame>
-        <Title note="Connect first. Gents will then ask this exact provider for its advertised models.">
-          Connect {providerOption?.displayName ?? "provider"}
-        </Title>
-        <div className="grid gap-4 rounded-2xl border border-border/60 bg-raised p-4 text-sm">
-          {connection && authOptions.length > 1 ? (
-            <Field label="Connection method">
-              <Select
-                items={authOptions.map((option) => ({
-                  value: option.method,
-                  label: option.displayName,
-                }))}
-                value={connection.authMethod}
-                onValueChange={(next) => {
-                  if (!next) return;
-                  const option = authOptions.find((item) => item.method === next);
-                  updateConnection({
-                    authMethod: next as InferenceAuthMethod,
-                    endpoint: option?.defaultEndpoint ?? connection.endpoint,
-                    apiKey: "",
-                  });
-                }}
-              >
-                <SelectTrigger className="w-full" autoFocus>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {authOptions.map((option) => (
-                    <SelectItem key={option.method} value={option.method}>
-                      {option.displayName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          ) : null}
-          {oauthProvider ? (
-            <div className="grid gap-3">
-              {signedIn[provider] ? (
-                <p className="flex items-center gap-2">
-                  <CircleCheck className="size-4" />
-                  Connected credential{" "}
-                  <span className="font-mono text-xs">{signedIn[provider]}</span>
-                </p>
-              ) : (
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-muted-foreground">
-                    {authLabel(connection!.authMethod)}
-                  </p>
-                  <span className="flex gap-2">
-                    {busy ? (
-                      <Button variant="outline" onClick={cancelSignIn}>
-                        Cancel
-                      </Button>
-                    ) : null}
-                    <Button variant="brand" disabled={busy} onClick={signIn}>
-                      {busy ? <Spinner /> : null}
-                      {busy ? "Waiting…" : "Sign in"}
-                    </Button>
-                  </span>
-                </div>
-              )}
-              {authUrl ? (
-                <button
-                  type="button"
-                  className="justify-self-start text-xs underline"
-                  onClick={() => void openExternalUrl(authUrl)}
-                >
-                  Open the sign-in page
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <>
-              <Field
-                label={
-                  connection?.authMethod === "optional_api_key"
-                    ? "API key (optional)"
-                    : "API key"
-                }
-              >
-                <Input
-                  type="password"
-                  value={connection?.apiKey ?? ""}
-                  autoFocus={authOptions.length <= 1}
-                  onChange={(event) => updateConnection({ apiKey: event.target.value })}
-                  placeholder="Stored only when you save"
-                />
-              </Field>
-              <Field label="Endpoint">
-                <Input
-                  value={connection?.endpoint ?? ""}
-                  className="font-mono"
-                  onChange={(event) =>
-                    updateConnection({ endpoint: event.target.value })
-                  }
-                />
-              </Field>
-            </>
-          )}
-        </div>
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          onBack={() => setInferenceStage("provider")}
-          next={discoverModels}
-          nextLabel="Connect and find models"
-          busy={busy}
-          disabled={!connectionReady}
-        />
-      </Frame>
-    );
-  }
-
-  if (inferenceStage === "model") {
-    return (
-      <Frame>
-        <Title note="These names are advertised by the connected provider. Gents will not silently substitute another model.">
-          Choose a model
-        </Title>
-        {discovery?.failure ? (
-          <div className="mb-4 rounded-xl border border-destructive/30 p-3">
-            <p className="text-sm text-destructive">{discovery.failure.message}</p>
-            <Button
-              className="mt-3"
-              variant="outline"
-              onClick={() => setInferenceStage("connect")}
-            >
-              Retry connection
-            </Button>
-          </div>
-        ) : null}
-        {discovery?.models.length ? (
-          <div className="grid gap-3">
-            <Input
-              value={modelSearch}
-              onChange={(event) => setModelSearch(event.target.value)}
-              placeholder="Search advertised models"
-              aria-label="Search advertised models"
-              autoFocus
-            />
-            <div
-              role="listbox"
-              aria-label="Advertised models"
-              className="max-h-64 overflow-y-auto rounded-xl border border-border/60 p-1"
-            >
-              {filteredModels.map((option) => (
-                <button
-                  key={option.advertised.model_name}
-                  type="button"
-                  role="option"
-                  aria-selected={model === option.advertised.model_name}
-                  className={cn(
-                    "block w-full rounded-lg px-3 py-2 text-left text-sm",
-                    model === option.advertised.model_name
-                      ? "bg-accent text-foreground"
-                      : "hover:bg-accent/60",
-                  )}
-                  onClick={() => chooseModel(option)}
-                >
-                  <span className="block font-medium">
-                    {option.advertised.display_name ?? option.advertised.model_name}
-                  </span>
-                  {option.advertised.display_name ? (
-                    <span className="block font-mono text-xs text-muted-foreground">
-                      {option.advertised.model_name}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : discovery?.manualEntryAllowed ? (
-          <div className="grid gap-3">
-            <p className="text-sm text-muted-foreground">
-              Model discovery is unavailable. Manual entry is enabled as an explicit
-              fallback and will be saved exactly as entered.
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
             </p>
-            <Field label="Manual model identifier">
-              <Input
-                value={model}
-                onChange={(event) => {
-                  setModel(event.target.value);
-                  setManualModel(true);
-                }}
-                placeholder="Exact served model ID"
-                autoFocus
-              />
-            </Field>
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No discovery result.</p>
-        )}
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
-        <Nav
-          onBack={() => setInferenceStage("connect")}
-          next={manualModel ? describeManualModel : () => setInferenceStage("review")}
-          nextLabel="Review defaults"
-          busy={busy}
-          disabled={!model.trim() || (!manualModel && !selectedRecommendation)}
-        />
-      </Frame>
-    );
-  }
-
-  return (
-    <Frame>
-      <Title note="Provider facts and Gents recommendations are shown separately. Customize only the controls supported for this model.">
-        Review inference
-      </Title>
-      <div className="mb-4 rounded-2xl border border-border/60 bg-raised p-4 text-sm">
-        <p className="font-medium">{model}</p>
-        <p className="mt-2 text-xs text-muted-foreground">Provider advertised</p>
-        <dl className="mt-1 grid grid-cols-2 gap-2 text-xs">
-          <div>
-            <dt className="text-muted-foreground">Context window</dt>
-            <dd>{advertised?.context_window?.toLocaleString() ?? "Not advertised"}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Max output</dt>
-            <dd>
-              {advertised?.max_output_tokens?.toLocaleString() ?? "Not advertised"}
-            </dd>
-          </div>
-        </dl>
-      </div>
-      {selectedRecommendation && settings ? (
-        <InferenceModelControls
-          recommendation={selectedRecommendation}
-          value={settings}
-          onChange={setSettings}
-          expanded={customize}
-          onExpandedChange={setCustomize}
-        />
-      ) : null}
-      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+          ) : null}
+        </div>
+      )}
       <Nav
-        onBack={() => setInferenceStage("model")}
-        next={saveInference}
-        nextLabel="Save and activate"
-        busy={busy}
-        disabled={!selectedRecommendation || !settings}
+        onBack={
+          busy
+            ? undefined
+            : (onCancel ??
+              (initialStep === "inference" ? undefined : () => setStep("welcome")))
+        }
       />
     </Frame>
   );
