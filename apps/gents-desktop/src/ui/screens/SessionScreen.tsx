@@ -242,27 +242,11 @@ function useTraceOpen() {
 }
 
 export function useBehaviorChoice(shell: Shell) {
-  const behaviours = shell.selectedDeployment?.behaviors ?? [];
-  const [picked, setPicked] = useState<string | null>(null);
-  const previousSessionId = useRef(shell.selectedSessionId);
-  useEffect(() => {
-    if (previousSessionId.current && !shell.selectedSessionId) {
-      setPicked(null);
-    }
-    previousSessionId.current = shell.selectedSessionId;
-  }, [shell.selectedSessionId]);
-  const behaviorId =
-    picked ??
-    shell.mailboxCause?.behaviorId ??
-    behaviours.find((b) => b.isDefault)?.behaviorId ??
-    behaviours[0]?.behaviorId ??
-    null;
   return {
-    behaviorId,
-    setPicked: (id: string | null) => {
-      setPicked(id);
-      shell.selectBehavior(id);
-    },
+    // Read the same effective selection that owns composer admission. Defaults,
+    // mailbox routing, and agent changes are resolved by the shell, not here.
+    behaviorId: shell.selectedBehaviorId,
+    setPicked: shell.selectBehavior,
   };
 }
 
@@ -293,7 +277,7 @@ export function SessionSubmissionStatus({
 
 export function SessionScreen({ shell }: { shell: Shell }) {
   const session = shell.selectedSession;
-  const [draft, setDraft] = useState("");
+  const { draft, setDraft } = shell;
   const [cascadeFor, setCascadeFor] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -366,7 +350,7 @@ export function SessionScreen({ shell }: { shell: Shell }) {
     const intentGeneration = shell.captureComposeIntent();
     const result = await pending;
     if (!shell.acceptsComposeIntent(intentGeneration)) return;
-    if (result) setDraft("");
+    if (result) setDraft((current) => (current === text ? "" : current));
     if (result && result.sessionId !== shell.selectedSessionId) {
       navigate({ name: "session", sessionId: result.sessionId });
     }

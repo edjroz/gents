@@ -34,11 +34,13 @@ export function useDesktopShell({
   const selectedAgentDidRef = useRef<string | null>(null);
   const selectedTrackedRequestIdRef = useRef<string | null>(null);
   const [sending, setSending] = useState(false);
+  const submissionInFlight = useRef(false);
   const [savingBehaviorConfig, setSavingBehaviorConfig] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [addingPeer, setAddingPeer] = useState(false);
   const [repairingP2P, setRepairingP2P] = useState(false);
   const [runningTask, setRunningTask] = useState(false);
+  const runningTaskCountRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const {
     session,
@@ -62,7 +64,7 @@ export function useDesktopShell({
     lastP2PAutoRestartAt,
     lastObservedP2PHealth,
     snapshot,
-    setSnapshot,
+    beginSnapshotPublication,
     startupPhase,
     loading,
     starting,
@@ -197,7 +199,6 @@ export function useDesktopShell({
     setError,
     setSelectedAgentDid,
     setSelectedBehaviorId,
-    setSelectedSessionId,
     snapshot,
     starting,
     stopping,
@@ -212,13 +213,13 @@ export function useDesktopShell({
     onRepairP2P,
   } = createDesktopShellPeerActions({
     api,
+    beginSnapshotPublication,
     snapshot,
     ensureDesktopClientStarted,
     setAddingPeer,
     setError,
     setRepairingP2P,
     setSelectedAgentDid,
-    setSnapshot,
     setStarting,
   });
   const foregroundRepairRef = useRef(onRepairP2P);
@@ -269,12 +270,12 @@ export function useDesktopShell({
     onTestToolService,
   } = createDesktopShellConfigActions({
     api,
+    beginSnapshotPublication,
     setError,
     setSavingBehaviorConfig,
     setSavingConfig,
     setSelectedAgentDid,
     setSelectedBehaviorId,
-    setSnapshot,
   });
 
   const {
@@ -286,6 +287,7 @@ export function useDesktopShell({
     onStartNewSession,
   } = createDesktopShellChatActions({
     acceptsComposeIntent,
+    submissionInFlight,
     advanceComposeIntent,
     api,
     behaviorReadiness,
@@ -319,14 +321,18 @@ export function useDesktopShell({
     onSaveTaskConfig,
     onSaveTriggerConfig,
   } = createDesktopShellTaskActions({
+    acceptsComposeIntent,
+    advanceComposeIntent,
     api,
+    beginSnapshotPublication,
+    captureComposeIntent,
     refreshSession,
     refreshSnapshot,
+    runningTaskCountRef,
     setError,
     setRunningTask,
     setSavingConfig,
     setSelectedSessionId,
-    setSnapshot,
   });
 
   function onDismissError() {
