@@ -17,8 +17,8 @@ default = [
 ]
 agent-memory = []
 typescript = ["dep:ts-rs"]
-# Gates the e2e_live test binary out of default builds: every test in it is
-# live-inference-gated, so default runs paid a ~160MB link to execute nothing.
+# Gates the optional live-inference collection out of default builds.
+# Configurator regressions are default-built separately in e2e_configurator.
 live-e2e = []
 
 # All other test binaries are auto-discovered; this explicit target overrides
@@ -73,6 +73,7 @@ query.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 regex = "1"
 schemars = "1"
 sha2.workspace = true
@@ -135,6 +136,9 @@ defra-node.workspace = true
 document.workspace = true
 proptest = "1"
 schema.workspace = true
+shlex = "1.3"
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25.1"
 storage.workspace = true
 gents-lean-contract.workspace = true
 gents-callback-fixture-create-workspace = { path = "../gents-callbacks/fixture_create_workspace", default-features = false }

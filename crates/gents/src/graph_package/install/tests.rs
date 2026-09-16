@@ -36,22 +36,24 @@ fn explicit_graph_selection_preserves_authored_identity_and_rejects_ambiguity() 
     };
     let mut package = load_test_graph_package("code_review", &options);
     assert_eq!(
-        selected_intent(&package, None).unwrap().graph_id,
+        selected_intent(&package.config.graph_intents, None)
+            .unwrap()
+            .graph_id,
         "code-review"
     );
     let mut second = package.config.graph_intents[0].clone();
     second.graph_id = "second-review".into();
     package.config.graph_intents.push(second.clone());
-    assert!(selected_intent(&package, None).is_err());
+    assert!(selected_intent(&package.config.graph_intents, None).is_err());
     assert_eq!(
-        selected_intent(&package, Some("second-review"))
+        selected_intent(&package.config.graph_intents, Some("second-review"))
             .unwrap()
             .graph_id,
         "second-review"
     );
-    assert!(selected_intent(&package, Some("absent")).is_err());
+    assert!(selected_intent(&package.config.graph_intents, Some("absent")).is_err());
     package.config.graph_intents.push(second);
-    assert!(selected_intent(&package, Some("second-review")).is_err());
+    assert!(selected_intent(&package.config.graph_intents, Some("second-review")).is_err());
 }
 
 #[tokio::test]
@@ -126,7 +128,7 @@ async fn existing_package_schema_must_match_types_indexes_and_immutability() {
         .await
         .unwrap_err();
     assert!(
-        format!("{error:#}").contains("does not match bundled schema"),
+        format!("{error:#}").contains("does not match requested schema"),
         "{error:#}"
     );
     assert!(node.get_collection("CodeReviewArea").unwrap().is_none());
