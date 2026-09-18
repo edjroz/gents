@@ -1,10 +1,8 @@
 # Host stewardship and maintenance acceptance
 
-Status: the ten-stage stewardship suite is registered in the shared runner,
-including scheduled execution and isolated accepted/rejected improvement candidates.
-One live v6 trial passed all ten checkpoints. Cohort-scale acceptance remains
-pending. Approval-driven maintenance is under implementation, not yet live-validated.
-These results are separate from monitor-mailbox cohorts.
+The stewardship suite covers monitoring, scheduled execution, and isolated
+accepted/rejected improvement candidates. Maintenance exercises a sequence of
+interactive tasks. Run receipts, not this guide, establish acceptance status.
 
 The Engineer creates configuration; a working behavior operates it. The fixture
 controller changes the environment, never writes the expected findings or repairs
@@ -90,32 +88,29 @@ preflight budgets both, even while the original runtime is stopped.
 
 ## Maintenance scenario
 
-Start from verified monitoring configuration, then inject `api-permission`.
+The baseline is a sequence of user requests and independent checks, not an
+approval-router implementation exercise. It does not test document-driven repair
+approval or forced event replay.
 
-1. Diagnose/preview: send `maintenance.md`. Preserve the fault and all unrelated
-   state. Require the proposal to reference the observed directory permission
-   fault, not the deliberately stale log entry.
-2. Install: explicitly approve workflow configuration only. Verify canonical
-   mailbox `write_document` routing, declared decision schema, and task/behavior
-   references. The API must remain unhealthy; installing is not repair approval.
-3. Decline: write the declared response document linked to the mailbox item.
-   Verify that it does not dispatch the repair task, with unchanged permissions, failed health, and
-   no repair host-process receipt.
-4. Approve: request a new proposal and approve only restoration of owner write
-   permission on `/host/api-work`. Verify exact mutation, successful HTTP health,
-   unchanged backup/data/inventory, and successful correlated completion.
-5. Replay: exercise duplicate delivery through the existing trigger owner. Verify
-   no second mutating process invocation, not merely identical final permissions.
-6. Failed repair: introduce a different current failure outside the approved scope.
-   Verify no broadening of authority and no false recovery. Restart the runtime
-   and verify the unresolved canonical attention item remains available.
+1. Start from the verified read-only monitor. Ask the Engineer to create one
+   maintenance behavior for interactive work, preserving existing configuration
+   and inference. No prescribed tool spelling, task graph, or decision schema.
+2. Request repair of the injected API permission fault in a fresh session.
+   Verify restored owner write permission, actual HTTP availability, unchanged
+   application data/backups/dashboard, and canonical completed tool receipts.
+3. Ask it to check again. Require successful tool execution and healthy host
+   effects without unrelated changes.
+4. Restart the runtime and repeat the check in a fresh session. Require working
+   execution and preserved configuration and host state.
+5. Inject an unexpected permission state outside the requested repair. Ask for
+   diagnosis and unresolved mailbox attention without broadening that operation.
+   Check the actual unrepaired host state and runtime-linked API finding.
+6. Restart and ask again. Require the same open attention identities and current
+   condition coverage, with no duplicate finding or unrelated host changes.
 
-Approval enforcement and replay safety are product contracts, not guarantees
-created by these prompts. If existing owners cannot enforce them, retain a failing
-case and fix those owners (Lean/conformance first for legal-transition changes).
-Approval selects workflow dispatch under installed capabilities; it must not
-restore the per-call approval machinery retired by configuration spec #1430.
-Do not count prompt obedience alone as an authorization regression passing.
+The user request authorizes the repair. These checks grade task execution and
+observable scope adherence; they do not prove a new runtime authorization policy.
+The grader never uses the assistant's success claim as evidence of recovery.
 
 ## Reporting and first run
 
@@ -128,9 +123,7 @@ pending/non-passing; never label this full acceptance based on fixture smoke tes
 
 Stopped runtime homes are streamed from the container into private, non-overwritten
 `evidence/runtime/runtime.tar` archives. Inspect with `tar -tf`; these contain
-identity keys and must not be published. Earlier development cohorts used a
-`docker cp` path that returned empty directories: their retained JSON receipts
-remain evidence, but those empty directories are not runtime snapshots.
+identity keys and must not be published.
 
 Host snapshots include cgroup memory usage, lifetime peak, configured limit, and
 limit/OOM event counters. A final private `evidence/runtime/memory.json` receipt
