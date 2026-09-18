@@ -27,4 +27,7 @@
 **/evidence
 **/test-results
 **/dist
+# The CLI embeds these committed Explorer assets at compile time.
+!third_party/defradb-explorer/dist/
+!third_party/defradb-explorer/dist/**
 **/.env*
