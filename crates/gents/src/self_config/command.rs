@@ -395,7 +395,8 @@ Behavior edit patches the canonical AgentBehavior document, including display_na
   get [--behavior BEHAVIOR_ID]
   preview [--behavior BEHAVIOR_ID] [--set FIELD=JSON] [--clear FIELD]
   edit [--behavior BEHAVIOR_ID] [--set FIELD=JSON] [--clear FIELD]
-This targets the Tools document referenced by the selected owned working behavior. Nested values are JSON. A patch is atomic; omitted fields preserve and --clear removes an optional field."#
+This targets the Tools document referenced by the selected owned working behavior. Nested values are JSON. A patch is atomic; omitted fields preserve and --clear removes an optional field.
+host.bash.mode selects the capability (Off by default). execution_mode, argv constraints, and background_enabled only constrain a selected capability; none enables it. For a scoped write command, select mode Unrestricted and an allowed_argv_prefixes array containing only the approved command's argv prefix. The process ceiling still limits effective authority. Read behavior get's runtime_effective after editing and test the tool in that working behavior; a saved constraint is not proof that a tool is available."#
             }
             Some("profile") => {
                 r#"profile commands:
@@ -477,6 +478,13 @@ Bundled names resolve locally; NAMESPACE/NAME resolves through the operator-sele
                     "notification_identity": {
                         "event": {"mode":"event"},
                         "condition": {"mode":"condition","key":"monitor-summary"},
+                    },
+                    "document_response": {
+                        "action": "write_document",
+                        "expected_collection": "Name of an installed application collection",
+                        "required_schema_field": "mailbox_item_key: String @immutable @index(unique: true)",
+                        "correlation": "The responder writes the stored MailboxItem.item_key into mailbox_item_key. A matching document resolves attention; its contents determine the workflow outcome, not mailbox status.",
+                        "authority": "Use DefraDB ACP for response writers. Do not grant the working behavior a response-writing tool when a human decision is required. Filter the event/task route on the approved decision; decline must not dispatch repairs."
                     },
                     "notification_contract": "Set the canonical entry's notification policy before binding the surface. Event mode files one item per runtime request. Condition mode maintains one open item per requester/behavior/configured key across requests, updating its content. Use a combined summary for multiple findings. The model supplies only title, summary and payload; identity, routing and request provenance are runtime-owned. The receipt returns outcome created/reused/updated and the stored item. Terminal items are never updated or reopened.",
                 })
