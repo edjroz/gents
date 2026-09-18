@@ -5,6 +5,7 @@ pub(super) fn entry_examples() -> Value {
         SurfaceToolDecl, WriteToolDecl, WriteToolField, WriteToolFieldFill,
     };
     let create = SurfaceToolDecl::Create(WriteToolDecl {
+        notification: None,
         tool_name: "record_result".into(),
         collection: "WorkResult".into(),
         description: "Record the result for the current input".into(),
@@ -34,10 +35,7 @@ impl ConfigCommandTool {
             .first()
             .map(String::as_str)
             .context("run config help datastore")?;
-        let id = argv
-            .get(1)
-            .context("datastore requires an exact SURFACE_ID")?;
-        anyhow::ensure!(!id.trim().is_empty(), "SURFACE_ID must not be blank");
+        let id = required_resource_id(argv.get(1), "SURFACE_ID")?;
         let target = SelfConfigTarget::DatastoreToolSurface;
         if verb == "get" && !preview {
             anyhow::ensure!(argv.len() == 2, "datastore get accepts only SURFACE_ID");
