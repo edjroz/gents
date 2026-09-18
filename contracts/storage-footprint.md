@@ -8,8 +8,8 @@ Investigation: gents-ai/gents#1543; implementation issues #1544–#1548.
 
 1. Quiet idle logs (#1546, #1547): pure wire resolver; ignored-setting
    diagnostics at configuration change; DEBUG for clean known no-op writes.
-2. Bound desktop logs (#1548): stable active path, size rotation and bounded
-   archives, including launcher-captured child output and fallback paths.
+2. Delegate desktop/runtime log storage to the operating system (#1548), with
+   a native per-user runtime service independent of the desktop frontend.
 3. Reduce stream writes (#1545): 1000 ms default batching and 4 KiB reasoning
    preview, coordinated with live consumers. Preserve configured overrides,
    first-visible bypass, final transcript, terminal owners and lease semantics.
@@ -31,7 +31,9 @@ Published review boundaries (each PR targets its immediate parent):
 - [#1557](https://github.com/gents-ai/gents/pull/1557),
   `storage-footprint-01-quiet-logs`: resolver and write telemetry.
 - [#1558](https://github.com/gents-ai/gents/pull/1558),
-  `storage-footprint-02-log-rotation`: desktop writer and detached launcher.
+  `storage-footprint-02-log-rotation`: native per-user service, OS-owned logs,
+  and desktop/menu-bar controls. The branch name is retained, but the custom
+  rotating writer and detached log supervisor have been removed.
 - [#1559](https://github.com/gents-ai/gents/pull/1559),
   `storage-footprint-03-streaming`: cadence and shared reasoning-preview bound.
 - [#1560](https://github.com/gents-ai/gents/pull/1560), `storage-footprint`:
@@ -125,10 +127,11 @@ Follow-up work preserves the same persistence and lifecycle owners:
   that item with the full durable reasoning. Earlier partial items can therefore
   overlap the final item. The smaller window makes this existing segmentation
   behavior more likely; it does not truncate the authoritative final thought.
-- Structured bridge tracing stays on its direct rotating file writer. The
-  raw-output supervisor keeps draining through sink failures with a fixed
-  buffer, counts dropped chunks, and resumes writes when the sink recovers.
-  It does not claim to recover bytes lost while storage was unavailable.
+- The initial rotating writer and raw-output supervisor were rejected in
+  architectural review. The replacement sends existing tracing events to
+  native logging and moves runtime process ownership to launchd/systemd.
+  See [native runtime service](native-runtime-service.md) for lifecycle,
+  installation, diagnostics, and validation boundaries.
 
 Body exports retain their fail-closed whole-command error contract when a
 selected durable capture is corrupt. Per-row error objects would be a new
@@ -195,19 +198,22 @@ Validation uncovered CLI test defects, kept distinct from storage changes:
 - #1556: status inspection raced a legitimate transition from `idle` to
   `debouncing`. The test now requires a recognized diagnostic phase while
   preserving exact readiness, runnable-count, identity and endpoint assertions.
+- #1574: the invalid-port rejection fixture's five-second deadline could expire
+  while macOS was still in `_dyld_start`, before application code ran. It now
+  uses the ordinary 30-second process-startup budget while retaining rejection,
+  actionable-error, and no-readiness assertions. Runtime deadlines are unchanged.
 
 This stack reduces new growth. It does not reclaim existing DefraDB history.
 No database wipe, historical row conversion, alternate streaming channel,
 answer-content truncation, or independent lease-renewal policy is included.
 Reprofile after these changes before choosing the next storage work.
 
-Desktop rotation bounds newly written segments to 10 MiB and keeps five
-archives. A pre-existing oversized active log is archived intact; its bytes
-remain until ordinary archive rotation expires it. The policy does not truncate
-existing diagnostic history at installation. Launcher-captured stdout/stderr
-and direct bridge tracing use the same rotating writer, with file locking for
-independent processes. The CLI/server audit found no equivalent default file
-sink; optional shim traces and individual scenario artifacts are separate.
-The detached supervisor follows inherited output-pipe lifetime; a descendant
-that retains a pipe can keep it alive after the GUI exits. It does not acquire
-ownership of, or kill, unrelated descendant processes to force an EOF.
+The follow-on canonical transcript/refactoring epic is #1571, coordinated with
+the `_docID` reference investigation in #1425. Persist-once streaming chunks and
+the associated schema/Lean/conformance refactor are not implemented by this stack.
+
+Native logging leaves retention to the user's OS policy; it does not promise
+a private 10 MiB/five-archive quota. Existing desktop logs are not deleted or
+rewritten. Foreground CLI output, optional shim traces, and explicit scenario
+artifacts remain separate. The app no longer creates a log-supervisor process
+or its own rotating file writer.
