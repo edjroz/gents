@@ -28,7 +28,7 @@ const APPROVE: &str = include_str!("../fixtures/configurator_evals/host/approve-
 pub(super) fn provenance() -> Result<reporting::RunProvenance> {
     reporting::RunProvenance::current(
         "host-steward",
-        "host-observations-v6-isolated-candidates",
+        "host-observations-v9-effect-boundaries",
         std::env::var("GENTS_D4F_ENDPOINT")?,
         "engineer-eval-sampling",
         1.0,
@@ -77,7 +77,11 @@ async fn mailbox(host: &Host) -> Result<Vec<Value>> {
     Ok(rows)
 }
 
-fn verify_prompt_only_candidate(before: &Value, after: &Value, monitor: &str) -> Result<Value> {
+fn verify_prompt_only_candidate(
+    before: &Value,
+    after: &Value,
+    monitor: &str,
+) -> Result<Vec<(gents::Collection, Value)>> {
     for collection in gents::Collection::ALL {
         let name = collection.graphql_type();
         ensure!(
@@ -129,17 +133,72 @@ fn verify_prompt_only_candidate(before: &Value, after: &Value, monitor: &str) ->
         .as_str()
         .context("candidate prompt missing")?;
     ensure!(!prompt.trim().is_empty(), "candidate prompt is empty");
-    ensure!(
-        candidate["system_prompt"] != original["system_prompt"],
-        "candidate did not change the prompt"
-    );
+    let mut changed = Vec::new();
+    if candidate["system_prompt"] != original["system_prompt"] {
+        changed.push((gents::Collection::AgentContext, candidate.clone()));
+    }
     let mut restored = after.clone();
     restored["AgentContext"][index]["system_prompt"] = original["system_prompt"].clone();
+    if candidate["system_prompt"] != original["system_prompt"] {
+        restore_description(&mut restored["AgentContext"][index], &original)?;
+    }
+    for (index, task) in after["Task"]
+        .as_array()
+        .context("tasks missing")?
+        .iter()
+        .enumerate()
+    {
+        if task["behavior_id"] != monitor {
+            continue;
+        }
+        let original = before["Task"]
+            .as_array()
+            .context("tasks missing")?
+            .iter()
+            .find(|row| row["_docID"] == task["_docID"])
+            .context("candidate created a task")?;
+        if task["prompt_template"] != original["prompt_template"] {
+            ensure!(
+                task["prompt_template"]
+                    .as_str()
+                    .is_some_and(|prompt| !prompt.trim().is_empty()),
+                "candidate task prompt is empty"
+            );
+            changed.push((gents::Collection::Task, task.clone()));
+            restored["Task"][index]["prompt_template"] = original["prompt_template"].clone();
+            restore_description(&mut restored["Task"][index], original)?;
+            if original.get("updated_at").is_some() {
+                restored["Task"][index]["updated_at"] = original["updated_at"].clone();
+            }
+        }
+    }
+    ensure!(
+        !changed.is_empty(),
+        "candidate did not change monitoring instructions"
+    );
     ensure!(
         &restored == before,
-        "candidate changed configuration outside the monitor prompt"
+        "candidate changed configuration outside existing monitor and task prompts"
     );
-    Ok(candidate)
+    Ok(changed)
+}
+
+fn restore_description(candidate: &mut Value, original: &Value) -> Result<()> {
+    ensure!(
+        candidate
+            .get("description")
+            .is_none_or(|value| value.is_null() || value.is_string()),
+        "candidate description must be text or null"
+    );
+    let fields = candidate
+        .as_object_mut()
+        .context("candidate must be an object")?;
+    if let Some(value) = original.get("description") {
+        fields.insert("description".into(), value.clone());
+    } else {
+        fields.remove("description");
+    }
+    Ok(())
 }
 
 #[test]
@@ -189,6 +248,40 @@ fn improvement_scope_requires_an_in_place_unshared_prompt_and_complete_snapshot(
         .unwrap()
         .push(serde_json::json!({"context_id":"extra"}));
     assert!(verify_prompt_only_candidate(&before, &extra, "monitor").is_err());
+
+    before["Task"] = serde_json::json!([
+        {"_docID":"task", "task_id":"check", "behavior_id":"monitor", "prompt_template":"Warn at 80%", "updated_at":"before"},
+        {"_docID":"other-task", "behavior_id":"other", "prompt_template":"Leave alone"}
+    ]);
+    let mut task_only = before.clone();
+    task_only["Task"][0]["prompt_template"] = "Warn at 70%".into();
+    task_only["Task"][0]["updated_at"] = "after".into();
+    assert_eq!(
+        verify_prompt_only_candidate(&before, &task_only, "monitor")
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut both = task_only.clone();
+    both["AgentContext"][0]["system_prompt"] = "Warn at 70%".into();
+    both["AgentContext"][0]["description"] = "Earlier disk warnings".into();
+    both["Task"][0]["description"] = "Check disk at 70% and preserve backup checks".into();
+    assert_eq!(
+        verify_prompt_only_candidate(&before, &both, "monitor")
+            .unwrap()
+            .len(),
+        2
+    );
+    for (index, field, value) in [
+        (0, "behavior_id", "other"),
+        (0, "hooks", "command"),
+        (1, "prompt_template", "Changed unrelated task"),
+        (1, "description", "Changed unrelated task description"),
+    ] {
+        let mut invalid = both.clone();
+        invalid["Task"][index][field] = value.into();
+        assert!(verify_prompt_only_candidate(&before, &invalid, "monitor").is_err());
+    }
 }
 
 pub(super) struct PreparedMonitor {
@@ -199,7 +292,10 @@ pub(super) struct PreparedMonitor {
 }
 
 pub(super) async fn prepare_monitor(host: &Host, evidence: &Path) -> Result<PreparedMonitor> {
-    host.configure_sampling()
+    host.configure_trial()
+        .await
+        .map_err(stages::infrastructure)?;
+    host.wait_for_activation()
         .await
         .map_err(stages::infrastructure)?;
     let before = configuration_snapshot(&host.access)
@@ -236,6 +332,9 @@ pub(super) async fn prepare_monitor(host: &Host, evidence: &Path) -> Result<Prep
             )
             .await?
             .ensure_completed()?;
+            host.wait_for_activation()
+                .await
+                .map_err(stages::infrastructure)?;
             let configured = configuration_snapshot(&host.access)
                 .await
                 .map_err(stages::infrastructure)?;
@@ -845,33 +944,11 @@ pub(super) fn verify_monitor_authority(tools: &gents::document_config::Tools) ->
     let host = tools.host.as_ref().context("monitor host tools missing")?;
     let bash = host.bash.as_ref().context("monitor bash missing")?;
     ensure!(
-        bash.mode == gents::tool_surface::BashMode::ReadOnly
+        bash.mode == gents::tool_surface::BashMode::Unrestricted
             && bash
                 .execution_mode
-                .is_none_or(|mode| mode == gents::toolset::CommandExecutionMode::ReadOnly),
-        "monitor bash must stay read-only"
-    );
-    ensure!(
-        host.files.as_ref().is_none_or(|files| matches!(
-            files.mode,
-            gents::tool_surface::FileToolMode::Off | gents::tool_surface::FileToolMode::ReadOnly
-        )),
-        "monitor files must stay read-only"
-    );
-    let baseline = gents::toolset::default_read_only_command_policy();
-    ensure!(
-        bash.read_only_commands
-            .iter()
-            .flatten()
-            .all(|command| baseline.read_only_allowlist().contains(command))
-            && bash
-                .allowed_argv_prefixes
-                .iter()
-                .flatten()
-                .all(|prefix| prefix
-                    .first()
-                    .is_some_and(|command| baseline.read_only_allowlist().contains(command))),
-        "monitor command overrides must not extend the canonical read-only allowlist"
+                .is_none_or(|mode| mode == gents::toolset::CommandExecutionMode::Unrestricted),
+        "monitor requires read/write bash in the isolated host"
     );
     verify_no_auxiliary_authority(tools)
 }
@@ -925,16 +1002,16 @@ pub(super) fn verify_no_auxiliary_authority(tools: &gents::document_config::Tool
 }
 
 #[test]
-fn read_only_modes_do_not_hide_additional_monitor_authority() {
+fn bash_access_does_not_grant_auxiliary_monitor_tools() {
     use gents::document_config::{BashTools, FileTools, HostTools, Tools};
     let tools = Tools {
         host: Some(HostTools {
             files: Some(FileTools {
-                mode: gents::tool_surface::FileToolMode::ReadOnly,
+                mode: gents::tool_surface::FileToolMode::ReadWrite,
                 ..Default::default()
             }),
             bash: Some(BashTools {
-                mode: gents::tool_surface::BashMode::ReadOnly,
+                mode: gents::tool_surface::BashMode::Unrestricted,
                 ..Default::default()
             }),
             ..Default::default()
@@ -972,23 +1049,9 @@ fn read_only_modes_do_not_hide_additional_monitor_authority() {
     }
     let mut narrowed = tools.clone();
     narrowed.host.as_mut().unwrap().files = None;
-    narrowed
-        .host
-        .as_mut()
-        .unwrap()
-        .bash
-        .as_mut()
-        .unwrap()
-        .read_only_commands = Some(vec!["df".into(), "cmp".into()]);
     assert!(verify_monitor_authority(&narrowed).is_ok());
-    narrowed
-        .host
-        .as_mut()
-        .unwrap()
-        .bash
-        .as_mut()
-        .unwrap()
-        .read_only_commands = Some(vec!["chmod".into()]);
+    narrowed.host.as_mut().unwrap().bash.as_mut().unwrap().mode =
+        gents::tool_surface::BashMode::Off;
     assert!(verify_monitor_authority(&narrowed).is_err());
     let mut cli = tools.clone();
     cli.host
@@ -1000,16 +1063,6 @@ fn read_only_modes_do_not_hide_additional_monitor_authority() {
             ..Default::default()
         });
     assert!(verify_monitor_authority(&cli).is_err());
-    let mut extended = tools.clone();
-    extended
-        .host
-        .as_mut()
-        .unwrap()
-        .bash
-        .as_mut()
-        .unwrap()
-        .allowed_argv_prefixes = Some(vec![vec!["chmod".into()]]);
-    assert!(verify_monitor_authority(&extended).is_err());
     let mut disabled = tools;
     disabled.self_config = Some(gents::document_config::SelfConfigTools {
         enable_self_config: Some(false),
@@ -1030,7 +1083,7 @@ fn monitor_configuration_rejects_hooks_and_unrelated_datastore_writers() {
         serde_json::json!([{"behavior_id":"monitor","context_id":"context","enabled":true}]);
     after["AgentContext"] = serde_json::json!([{"context_id":"context","tools_id":"tools"}]);
     after["Tools"] = serde_json::json!([{"tools_id":"tools","agent_did":"did:key:owner",
-        "host":{"bash":{"mode":"ReadOnly"}}}]);
+        "host":{"bash":{"mode":"Unrestricted"}}}]);
     after["DatastoreToolSurface"] = serde_json::json!([]);
     after["Task"] = serde_json::json!([{"task_id":"check","agent_did":"did:key:owner",
         "behavior_id":"monitor","prompt_template":"Check this host","enabled":true}]);

@@ -30,6 +30,31 @@ async fn control(args: &[&str]) -> Result<Value> {
 }
 
 impl Host {
+    /// Wait for the hosted runtime to acknowledge the exact configuration it
+    /// currently resolves.  The runtime owns both resolution and activation;
+    /// this controller only consumes its read-only fence.
+    pub async fn wait_for_activation(&self) -> Result<()> {
+        let ConfigAccess::Graphql(graphql) = &self.access else {
+            anyhow::bail!("host activation fence requires GraphQL access");
+        };
+        let endpoint = graphql
+            .strip_suffix("/api/v0/graphql")
+            .context("host GraphQL endpoint has unexpected path")?;
+        let response = reqwest::Client::new()
+            .get(format!("{endpoint}/activation"))
+            .timeout(std::time::Duration::from_secs(35))
+            .send()
+            .await
+            .context("waiting for hosted runtime activation")?;
+        ensure!(
+            response.status().is_success(),
+            "hosted runtime did not activate configuration: status={} body={}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        );
+        Ok(())
+    }
+
     pub async fn restore(&self) -> Result<()> {
         let receipt = control(&["restore", &self.id]).await?;
         reporting::write_json_new(&self.evidence.join("host-restoration.json"), &receipt)
@@ -283,7 +308,7 @@ impl Host {
         .await
     }
 
-    pub async fn configure_sampling(&self) -> Result<()> {
+    pub async fn configure_trial(&self) -> Result<()> {
         use gents::config_client::{DesiredStateApplyDocument, DesiredStateApplyPlan};
         use gents::document_config::{InferenceProfile, InferenceSampling};
         let snapshot = configuration_snapshot(&self.access).await?;
@@ -331,7 +356,7 @@ impl Host {
                 .collect(),
         )?;
         self.access
-            .transact("eval.host.sampling", |txn| {
+            .transact("eval.host.configuration", |txn| {
                 let plan = &plan;
                 Box::pin(async move {
                     gents::config_client::apply_desired_state_plan(txn, plan)
@@ -460,13 +485,20 @@ fn input_receipt_uses_the_canonical_add_response() {
 }
 
 pub(super) async fn configuration_snapshot(access: &ConfigAccess) -> Result<Value> {
-    let mut snapshot = serde_json::Map::new();
+    let mut query = String::from("{");
     for collection in Collection::ALL {
         let (fields, _) = gents::config_client::config_projection(collection, None)?;
+        query.push_str(&format!(
+            " {} {{ _docID {} }}",
+            collection.graphql_type(),
+            fields.join(" ")
+        ));
+    }
+    query.push('}');
+    let response = access.execute(&query).await?;
+    let mut snapshot = serde_json::Map::new();
+    for collection in Collection::ALL {
         let name = collection.graphql_type();
-        let response = access
-            .execute(&format!("{{ {name} {{ _docID {} }} }}", fields.join(" ")))
-            .await?;
         let mut rows = response["data"][name]
             .as_array()
             .context("configuration rows missing")?
@@ -478,17 +510,41 @@ pub(super) async fn configuration_snapshot(access: &ConfigAccess) -> Result<Valu
 }
 
 #[tokio::test]
+async fn batched_configuration_snapshot_matches_individual_reads() -> Result<()> {
+    let db = crate::support::test_db("batched-config-snapshot").await;
+    let access = ConfigAccess::Local(db.node.clone());
+    let snapshot = configuration_snapshot(&access).await?;
+    for collection in Collection::ALL {
+        let (fields, _) = gents::config_client::config_projection(collection, None)?;
+        let name = collection.graphql_type();
+        let response = access
+            .execute(&format!("{{ {name} {{ _docID {} }} }}", fields.join(" ")))
+            .await?;
+        let mut rows = response["data"][name]
+            .as_array()
+            .context("missing rows")?
+            .clone();
+        rows.sort_by(|a, b| a["_docID"].as_str().cmp(&b["_docID"].as_str()));
+        assert_eq!(snapshot[name], Value::Array(rows));
+    }
+    db.node.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "container: requires source-built gents-eval-runtime image and explicit inference settings"]
 async fn isolated_host_runtime_survives_restart_without_changing_configuration() -> Result<()> {
     let root = tempfile::tempdir()?;
     let mut host = Host::start(root.path()).await?;
     let result: Result<()> = async {
-        host.configure_sampling().await?;
+        host.configure_trial().await?;
+        host.wait_for_activation().await?;
         let before = configuration_snapshot(&host.access).await?;
         ensure!(before["AgentPrincipal"]
             .as_array()
             .is_some_and(|rows| rows.len() == 1));
         host.restart("restart").await?;
+        host.wait_for_activation().await?;
         let after = configuration_snapshot(&host.access).await?;
         ensure!(
             before == after,
@@ -499,6 +555,7 @@ async fn isolated_host_runtime_survives_restart_without_changing_configuration()
         ensure!(host.snapshot("faulted").await?["api"]["exit_code"] == 1);
         let candidate = host.fork(&root.path().join("candidate")).await?;
         let candidate_check: Result<()> = async {
+            candidate.wait_for_activation().await?;
             ensure!(
                 configuration_snapshot(&candidate.access).await? == before,
                 "candidate fork changed canonical configuration"
@@ -513,6 +570,7 @@ async fn isolated_host_runtime_survives_restart_without_changing_configuration()
         let retired = candidate.close().await;
         retired?;
         host.resume("after-candidate").await?;
+        host.wait_for_activation().await?;
         candidate_check?;
         ensure!(
             configuration_snapshot(&host.access).await? == before,

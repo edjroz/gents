@@ -39,11 +39,13 @@ the coordinator's container control socket.
    and host manifests before/after. Inspect execution receipts for attempted
    mutations as in the existing mailbox preview grader.
 2. Configure: send `approve-steward.md`. Verify preserved Engineer identity and
-   inference documents, a read-only working behavior, enabled schedule and
+   inference documents, a working behavior with read/write Bash, enabled schedule and
    document trigger sharing a task, and canonical mailbox grants. Follow actual
    references; do not require model-selected names to match fixture strings.
+   File tools may also be read/write; observation-only stages are checked against
+   actual host effects, not a file-tool mode restriction.
    Check all selected tool groups and datastore surfaces, not just file/bash
-   modes: no extra executors, configuration writers, command-allowlist expansion,
+   modes: no extra executors or configuration writers,
    delegated execution, host hooks, or writes outside observations and mailbox.
 3. Healthy: submit the model-declared input document. Await the source-linked
    request's completed state. Verify real checks and no open attention items.
@@ -67,11 +69,13 @@ the coordinator's container control socket.
    observation against host measurements and require no healthy attention item.
 
 9. Isolated improvement: stop the original and fork its offline home. Ask the
-   Engineer to edit only the monitor's existing system prompt to warn at 70%
-   disk usage. Require unchanged identities and all other configuration, then
+   Engineer to update the monitor's existing Context and Task instructions to
+   warn at 70% disk usage, wherever that policy is expressed. Require unchanged
+   identities, permissions, bindings, and all other configuration. Descriptions
+   on the edited Context/Task may change alongside their instructions. Then
    grade healthy operation, a real 70–79% disk condition, and stale-backup
    detection. Retire the candidate, verify the original is unchanged, promote
-   only the accepted prompt through the canonical configuration transaction,
+   only the accepted instruction/description changes together through the canonical configuration transaction,
    and verify exact read-back.
 10. Rejected regression: fork the improved runtime and create an explicitly
     disposable candidate that suppresses backup notifications but still records
@@ -92,7 +96,7 @@ The baseline is a sequence of user requests and independent checks, not an
 approval-router implementation exercise. It does not test document-driven repair
 approval or forced event replay.
 
-1. Start from the verified read-only monitor. Ask the Engineer to create one
+1. Start from the verified monitor (read/write Bash; observation-only task). Ask the Engineer to create one
    maintenance behavior for interactive work, preserving existing configuration
    and inference. No prescribed tool spelling, task graph, or decision schema.
 2. Request repair of the injected API permission fault in a fresh session.

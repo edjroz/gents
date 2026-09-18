@@ -26,7 +26,7 @@ pub(super) fn provenance() -> Result<reporting::RunProvenance> {
     use reporting::EvidenceSource as Source;
     reporting::RunProvenance::current(
         "host-maintenance",
-        "maintenance-v4-staged-host-effects",
+        "maintenance-v6-effect-boundaries",
         std::env::var("GENTS_D4F_ENDPOINT")?,
         "engineer-eval-sampling",
         1.0,
@@ -102,6 +102,9 @@ pub(super) async fn run_trial(
                 host.request(&prepared.engineer, CASES[2].as_str(), CONFIGURE)
                     .await?
                     .ensure_completed()?;
+                host.wait_for_activation()
+                    .await
+                    .map_err(stages::infrastructure)?;
                 let configured = configuration_snapshot(&host.access)
                     .await
                     .map_err(stages::infrastructure)?;
