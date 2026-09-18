@@ -6,6 +6,22 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
 
 ## Unreleased
 
+## 0.18.2 - 2026-09-18
+
+### Changed
+
+- Losslessly delta-encode witnessed request captures while preserving existing
+  capture readability, reducing repeated transcript storage without a history
+  rewrite.
+- Reduce streaming progress and reasoning-preview volume, quiet idle runtime
+  logging, and delegate managed runtime lifetime and logs to native user
+  services.
+
+### Fixed
+
+- Restore signed macOS desktop packaging on release runners using Python 3.14.
+- Include the vendored DefraDB Explorer assets in the Linux runtime image.
+
 ## 0.18.1 - 2026-09-18
 
 ### Added
