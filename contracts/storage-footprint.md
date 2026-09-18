@@ -1,7 +1,9 @@
 # Storage footprint implementation stack
 
-Baseline: `storage-footprint` starts at freshly fetched `origin/main`
-`047a4ab9918c8c6f39209de920fcc4f08f09d26b` (2026-09-18).
+Original baseline: freshly fetched `origin/main`
+`047a4ab9918c8c6f39209de920fcc4f08f09d26b` (2026-09-18). Before landing,
+the stack was rebased onto `0deb7659c696e70efc2f87c3aae114ab8f490fe0`,
+preserving native tabs (#1527), v0.18 installers (#1551), and Explorer (#1568).
 Investigation: gents-ai/gents#1543; implementation issues #1544–#1548.
 
 ## Delivery boundaries
