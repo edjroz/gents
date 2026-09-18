@@ -26,7 +26,7 @@ umask 022
 app="$CARGO_TARGET_DIR/release/bundle/macos/Gents.app"
 codesign --verify --deep --strict --verbose=2 "$app"
 codesign -d --entitlements :- "$app" 2>/dev/null | \
-  python3 -c 'import plistlib,sys; assert plistlib.load(sys.stdin.buffer).get("com.apple.security.cs.allow-unsigned-executable-memory") is True'
+  python3 -c 'import plistlib,sys; assert plistlib.loads(sys.stdin.buffer.read()).get("com.apple.security.cs.allow-unsigned-executable-memory") is True'
 xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=4 "$app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" == "$RELEASE_VERSION" ]]
