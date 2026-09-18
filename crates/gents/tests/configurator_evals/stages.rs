@@ -47,49 +47,106 @@ fn stage_budget_defaults_to_thirty_minutes_and_validates_overrides() {
     }
 }
 
-// One declaration drives both call-site identifiers and report enumeration.
-macro_rules! case_catalog {
-    ($($variant:ident => $id:literal),+ $(,)?) => {
-        #[derive(Clone, Copy, Debug)]
-        pub enum CaseId { $($variant),+ }
-        impl CaseId {
-            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
-            pub const fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $id),+ }
-            }
-        }
-    };
+/// Stable receipt identity supplied by the suite that owns the scenario.
+///
+/// Keeping this as a value rather than a closed enum lets adjacent suites use
+/// the shared receipt and report machinery without adding their case names to
+/// this module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaseId(&'static str);
+
+#[allow(non_upper_case_globals)]
+impl CaseId {
+    pub const Onboarding: Self = Self::new("onboarding");
+    pub const BuilderReadiness: Self = Self::new("builder-readiness");
+    pub const SkillWorkflow: Self = Self::new("skill-workflow");
+    pub const Pagoda: Self = Self::new("pagoda");
+    pub const Review: Self = Self::new("review");
+    pub const Improve: Self = Self::new("improve");
+    pub const DocumentAutomation: Self = Self::new("document-automation");
+
+    pub const fn new(id: &'static str) -> Self {
+        Self(id)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
 }
 
-case_catalog! {
-    Onboarding => "onboarding",
-    BuilderReadiness => "builder-readiness",
-    SkillWorkflow => "skill-workflow",
-    Pagoda => "pagoda",
-    Review => "review",
-    Improve => "improve",
-    DocumentAutomation => "document-automation",
+pub const PROGRESSIVE_CASES: &[CaseId] = &[
+    CaseId::Onboarding,
+    CaseId::BuilderReadiness,
+    CaseId::SkillWorkflow,
+    CaseId::Pagoda,
+    CaseId::Review,
+    CaseId::Improve,
+    CaseId::DocumentAutomation,
+];
+
+pub fn validate_case_catalog(cases: &[CaseId]) -> Result<()> {
+    ensure!(!cases.is_empty(), "eval case catalog must not be empty");
+    let mut unique = std::collections::BTreeSet::new();
+    for case in cases {
+        let id = case.as_str();
+        ensure!(
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+            "eval case ID must contain only lowercase ASCII letters, digits, and hyphens: {id:?}"
+        );
+        ensure!(unique.insert(id), "duplicate eval case ID: {id}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum EvaluationFailure {
     #[error("evaluation deadline exceeded for {0}")]
     Deadline(String),
-    #[error("model request failed: {0}")]
-    ModelRequest(String),
+    #[error("provider failed: {0}")]
+    Provider(String),
+    #[error("tool execution failed: {0}")]
+    Tool(String),
+    #[error("runtime failed: {0}")]
+    Runtime(String),
     #[error("evaluation inconclusive: {0}")]
     Inconclusive(String),
     #[error("evaluation infrastructure failed: {0}")]
     Infrastructure(String),
+    #[error("grader failed: {0}")]
+    Grader(String),
+    #[error("model output failed acceptance: {0}")]
+    ModelAcceptance(String),
+    #[error("evaluation failure has unknown cause: {0}")]
+    Unknown(String),
 }
 
 impl EvaluationFailure {
-    fn kind(&self) -> &'static str {
+    pub const KINDS: &[&str] = &[
+        "deadline",
+        "provider",
+        "tool",
+        "runtime",
+        "inconclusive",
+        "infrastructure",
+        "grader",
+        "model_acceptance",
+        "unknown",
+    ];
+
+    pub fn kind(&self) -> &'static str {
         match self {
             Self::Deadline(_) => "deadline",
-            Self::ModelRequest(_) => "model_request",
+            Self::Provider(_) => "provider",
+            Self::Tool(_) => "tool",
+            Self::Runtime(_) => "runtime",
             Self::Inconclusive(_) => "inconclusive",
             Self::Infrastructure(_) => "infrastructure",
+            Self::Grader(_) => "grader",
+            Self::ModelAcceptance(_) => "model_acceptance",
+            Self::Unknown(_) => "unknown",
         }
     }
 }
@@ -100,6 +157,26 @@ pub fn infrastructure(error: anyhow::Error) -> anyhow::Error {
     } else {
         EvaluationFailure::Infrastructure(format!("{error:#}")).into()
     }
+}
+
+pub fn model_acceptance(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<EvaluationFailure>().is_some() {
+        error
+    } else {
+        EvaluationFailure::ModelAcceptance(format!("{error:#}")).into()
+    }
+}
+
+pub fn grader(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<EvaluationFailure>().is_some() {
+        error
+    } else {
+        EvaluationFailure::Grader(format!("{error:#}")).into()
+    }
+}
+
+pub async fn acceptance<T>(check: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    check.await.map_err(model_acceptance)
 }
 
 /// Evidence failures invalidate a pass, but never replace an existing verdict.
@@ -141,6 +218,8 @@ pub struct StageResult {
     pub elapsed_ms: u128,
     pub answer: String,
     pub observation_timed_out: bool,
+    pub failure_kind: Option<String>,
+    pub observed_outcome: Value,
 }
 
 impl StageResult {
@@ -149,11 +228,17 @@ impl StageResult {
             return Err(EvaluationFailure::Deadline(self.stage.clone()).into());
         }
         if self.terminal_state != "completed" {
-            return Err(EvaluationFailure::ModelRequest(format!(
-                "{}: {}",
-                self.stage, self.terminal_state
-            ))
-            .into());
+            let detail = format!(
+                "{}: {}; observed={}",
+                self.stage, self.terminal_state, self.observed_outcome
+            );
+            let failure = match self.failure_kind.as_deref() {
+                Some("provider") => EvaluationFailure::Provider(detail),
+                Some("tool") => EvaluationFailure::Tool(detail),
+                Some("runtime") => EvaluationFailure::Runtime(detail),
+                _ => EvaluationFailure::Unknown(detail),
+            };
+            return Err(failure.into());
         }
         Ok(())
     }
@@ -172,13 +257,13 @@ pub struct CaseResult {
 async fn every_catalog_case_is_reported_and_receipt_identity_is_checked() {
     let evidence = tempfile::tempdir().unwrap();
     let mut ids = std::collections::BTreeSet::new();
-    for &case in CaseId::ALL {
+    for &case in PROGRESSIVE_CASES {
         assert!(ids.insert(case.as_str()));
         checked(case, evidence.path(), async { Ok(()) })
             .await
             .unwrap();
     }
-    let results = case_results(evidence.path()).unwrap();
+    let results = case_results(PROGRESSIVE_CASES, evidence.path()).unwrap();
     assert_eq!(results.len(), ids.len());
     assert!(results
         .iter()
@@ -190,7 +275,44 @@ async fn every_catalog_case_is_reported_and_receipt_identity_is_checked() {
         serde_json::to_vec(&incorrect).unwrap(),
     )
     .unwrap();
-    assert!(case_results(evidence.path()).is_err());
+    assert!(case_results(PROGRESSIVE_CASES, evidence.path()).is_err());
+}
+
+#[test]
+fn suite_owned_case_catalogs_are_validated_without_reporting_missing_cases_as_passed() {
+    const CASES: &[CaseId] = &[
+        CaseId::new("onboarding-fresh-setup"),
+        CaseId::new("onboarding-after-restart"),
+    ];
+    validate_case_catalog(CASES).unwrap();
+    assert!(validate_case_catalog(&[CaseId::new("duplicate"), CaseId::new("duplicate")]).is_err());
+    assert!(validate_case_catalog(&[CaseId::new("../receipt")]).is_err());
+
+    let evidence = tempfile::tempdir().unwrap();
+    let results = case_results(CASES, evidence.path()).unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| {
+        result.status == "skipped" && result.failure_kind.as_deref() == Some("prerequisite")
+    }));
+}
+
+#[tokio::test]
+async fn case_receipts_are_immutable_after_first_publication() {
+    let evidence = tempfile::tempdir().unwrap();
+    let case = CaseId::new("suite-owned-case");
+    checked(case, evidence.path(), async { Ok(()) })
+        .await
+        .unwrap();
+    let replacement = checked::<()>(case, evidence.path(), async {
+        Err(model_acceptance(anyhow::anyhow!("replacement verdict")))
+    })
+    .await
+    .unwrap_err();
+    assert!(format!("{replacement:#}").contains("replacement verdict"));
+    assert!(format!("{replacement:#}").contains("evidence retention also failed"));
+    let retained = case_results(&[case], evidence.path()).unwrap();
+    assert_eq!(retained[0].status, "passed");
+    assert!(retained[0].failure_kind.is_none());
 }
 
 #[tokio::test]
@@ -213,19 +335,38 @@ async fn case_reporting_preserves_failure_classification_and_skipped_prerequisit
             .is_err()
     );
     let infrastructure: Result<()> =
-        Err(EvaluationFailure::Infrastructure("Chrome unavailable".into()).into());
+        Err(EvaluationFailure::Infrastructure("disk unavailable".into()).into());
     assert!(
         checked(CaseId::Improve, evidence.path(), async { infrastructure })
             .await
             .is_err()
     );
-    let results = case_results(evidence.path()).unwrap();
+    let results = case_results(PROGRESSIVE_CASES, evidence.path()).unwrap();
     assert_eq!(results.len(), 7);
     assert_eq!(results[0].failure_kind.as_deref(), Some("deadline"));
     assert_eq!(results[1].status, "passed");
     assert_eq!(results[2].status, "skipped");
     assert_eq!(results[3].failure_kind.as_deref(), Some("inconclusive"));
     assert_eq!(results[5].failure_kind.as_deref(), Some("infrastructure"));
+}
+
+#[test]
+fn untyped_failures_remain_unknown_until_the_check_owner_classifies_them() {
+    let raw = anyhow::anyhow!("ambiguous failure");
+    let classified = raw
+        .downcast_ref::<EvaluationFailure>()
+        .map_or("unknown", EvaluationFailure::kind);
+    assert_eq!(classified, "unknown");
+    let accepted = model_acceptance(anyhow::anyhow!("missing requested file"));
+    assert_eq!(
+        accepted.downcast_ref::<EvaluationFailure>().unwrap().kind(),
+        "model_acceptance"
+    );
+    let grader = grader(anyhow::anyhow!("invalid checker receipt"));
+    assert_eq!(
+        grader.downcast_ref::<EvaluationFailure>().unwrap().kind(),
+        "grader"
+    );
 }
 
 /// Independent acceptance is distinct from a model request terminalizing.
@@ -246,24 +387,25 @@ pub async fn checked<T>(
         failure_kind: result.as_ref().err().map(|error| {
             error
                 .downcast_ref::<EvaluationFailure>()
-                .map_or("acceptance", EvaluationFailure::kind)
+                .map_or("unknown", EvaluationFailure::kind)
                 .to_owned()
         }),
     };
     tracing::info!(target: "gents::configurator_eval", result = %serde_json::to_string(&receipt)?, "eval case acceptance");
     let retention = (|| {
         std::fs::create_dir_all(evidence)?;
-        std::fs::write(
-            evidence.join(format!("{case_id}-acceptance.json")),
-            serde_json::to_vec_pretty(&receipt)?,
+        super::reporting::write_json_new(
+            &evidence.join(format!("{case_id}-acceptance.json")),
+            &receipt,
         )?;
         Ok(())
     })();
     retain_outcome(result, retention)
 }
 
-pub fn case_results(evidence: &Path) -> Result<Vec<CaseResult>> {
-    CaseId::ALL
+pub fn case_results(cases: &[CaseId], evidence: &Path) -> Result<Vec<CaseResult>> {
+    validate_case_catalog(cases)?;
+    cases
         .iter()
         .map(|case| case.as_str())
         .map(|case_id| {
@@ -612,6 +754,155 @@ pub async fn execute(
         .map_err(infrastructure)
 }
 
+fn write_stage_progress(
+    evidence: &Path,
+    stage: &str,
+    phase: &str,
+    request_id: Option<&str>,
+    session_id: Option<&str>,
+    lifecycle_state: Option<&str>,
+    started_at: &str,
+) -> Result<()> {
+    super::reporting::write_json(
+        &evidence.join(format!("{stage}-progress.json")),
+        &serde_json::json!({
+            "stage": stage,
+            "phase": phase,
+            "request_id": request_id,
+            "session_id": session_id,
+            "lifecycle_state": lifecycle_state,
+            "started_at": started_at,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+async fn observed_request_outcome(node: &EmbeddedNode, request_id: &str) -> Result<Value> {
+    let escaped = escape_graphql_string(request_id);
+    let response = node.execute(&format!(
+        r#"{{
+            AgentRequest(filter: {{request_id: {{_eq: "{escaped}"}}}}) {{request_id lifecycle_state failure_reason session_id}}
+            AgentResponse(filter: {{request_id: {{_eq: "{escaped}"}}}}) {{status error_message}}
+            InferenceCall(filter: {{request_id: {{_eq: "{escaped}"}}}}) {{call_seq call_state failure_reason queued_at started_at ended_at}}
+            AgentToolCall(filter: {{request_id: {{_eq: "{escaped}"}}}}) {{tool_name status lifecycle_state started_at completed_at}}
+        }}"#
+    )).await;
+    ensure!(
+        !response.has_errors(),
+        "request outcome query failed: {:?}",
+        response.errors
+    );
+    response
+        .data
+        .context("request outcome query returned no data")
+}
+
+fn classify_request_outcome(
+    terminal_state: &str,
+    observation_timed_out: bool,
+    outcome: &Value,
+) -> Option<&'static str> {
+    if observation_timed_out {
+        return Some("deadline");
+    }
+    if terminal_state == "completed" {
+        return None;
+    }
+    let rows = |name: &str| {
+        outcome
+            .get(name)
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    };
+    if rows("InferenceCall").iter().any(|row| {
+        matches!(row["call_state"].as_str(), Some("failed" | "error"))
+            || row["failure_reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty())
+    }) {
+        return Some("provider");
+    }
+    if rows("AgentToolCall").iter().any(|row| {
+        matches!(row["lifecycle_state"].as_str(), Some("failed"))
+            || matches!(row["status"].as_str(), Some("failed" | "error"))
+    }) {
+        return Some("tool");
+    }
+    if rows("AgentRequest").iter().any(|row| {
+        matches!(
+            row["lifecycle_state"].as_str(),
+            Some("failed" | "cancelled" | "interrupted")
+        )
+    }) {
+        return Some("runtime");
+    }
+    Some("unknown")
+}
+
+#[test]
+fn request_failure_taxonomy_uses_structured_observations_and_preserves_unknown() {
+    let outcome = |request: &str, inference: Value, tools: Value| {
+        serde_json::json!({
+            "AgentRequest":[{"lifecycle_state":request}],
+            "InferenceCall":inference,
+            "AgentToolCall":tools,
+        })
+    };
+    assert_eq!(
+        classify_request_outcome(
+            "failed",
+            false,
+            &outcome(
+                "failed",
+                serde_json::json!([{"call_state":"failed","failure_reason":"503"}]),
+                serde_json::json!([])
+            ),
+        ),
+        Some("provider")
+    );
+    assert_eq!(
+        classify_request_outcome(
+            "failed",
+            false,
+            &outcome(
+                "failed",
+                serde_json::json!([]),
+                serde_json::json!([{"lifecycle_state":"failed"}])
+            ),
+        ),
+        Some("tool")
+    );
+    assert_eq!(
+        classify_request_outcome(
+            "failed",
+            false,
+            &outcome("failed", serde_json::json!([]), serde_json::json!([]))
+        ),
+        Some("runtime")
+    );
+    assert_eq!(
+        classify_request_outcome(
+            "mystery",
+            false,
+            &outcome("mystery", serde_json::json!([]), serde_json::json!([]))
+        ),
+        Some("unknown")
+    );
+    assert_eq!(
+        classify_request_outcome(
+            "completed",
+            false,
+            &outcome("completed", serde_json::json!([]), serde_json::json!([]))
+        ),
+        None
+    );
+    assert_eq!(
+        classify_request_outcome("processing", true, &serde_json::json!({})),
+        Some("deadline")
+    );
+}
+
 async fn execute_inner(
     activation: &ActivationFence,
     node: &EmbeddedNode,
@@ -623,6 +914,7 @@ async fn execute_inner(
 ) -> Result<StageResult> {
     let timeout = stage_timeout()?;
     let started = Instant::now();
+    let started_at = chrono::Utc::now().to_rfc3339();
     std::fs::create_dir_all(evidence)?;
     std::fs::write(
         evidence.join(format!("{stage}-input.json")),
@@ -631,13 +923,24 @@ async fn execute_inner(
             "transport":"GentsEvalStageInput -> EventSource -> Trigger -> Task -> AgentRequest",
         }))?,
     )?;
+    write_stage_progress(evidence, stage, "submitting", None, None, None, &started_at)?;
     let request_id = submit_stage(activation, node, owner, behavior, stage, prompt).await?;
+    write_stage_progress(
+        evidence,
+        stage,
+        "observing",
+        Some(&request_id),
+        None,
+        Some("materialized"),
+        &started_at,
+    )?;
     let escaped = escape_graphql_string(&request_id);
     let query = format!(
         r#"{{ AgentRequest(filter: {{request_id: {{_eq: "{escaped}"}}}}) {{lifecycle_state session_id}} }}"#
     );
     let mut observation_timed_out = false;
     let mut next_usage_snapshot = Instant::now();
+    let mut last_progress = None;
     let (terminal_state, session_id) = loop {
         let response = node.execute(&query).await;
         ensure!(
@@ -655,6 +958,19 @@ async fn execute_inner(
             .as_ref()
             .and_then(|data| data["AgentRequest"][0]["session_id"].as_str())
             .map(str::to_owned);
+        let progress = (state.to_owned(), session_id.clone());
+        if last_progress.as_ref() != Some(&progress) {
+            write_stage_progress(
+                evidence,
+                stage,
+                "observing",
+                Some(&request_id),
+                session_id.as_deref(),
+                Some(state),
+                &started_at,
+            )?;
+            last_progress = Some(progress);
+        }
         if gents_protocol::request_lifecycle::RequestLifecycleState::is_terminal_str(Some(state)) {
             break (state.to_owned(), session_id);
         }
@@ -670,6 +986,15 @@ async fn execute_inner(
         if started.elapsed() > timeout {
             if !observation_timed_out {
                 observation_timed_out = true;
+                write_stage_progress(
+                    evidence,
+                    stage,
+                    "interrupt_requested",
+                    Some(&request_id),
+                    session_id.as_deref(),
+                    Some(state),
+                    &started_at,
+                )?;
                 gents::interrupt_request(node, &request_id)
                     .await
                     .context("interrupt stage after evaluation deadline")?;
@@ -680,6 +1005,25 @@ async fn execute_inner(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
+    let observed_outcome = observed_request_outcome(node, &request_id)
+        .await
+        .map_err(infrastructure)?;
+    let failure_kind =
+        classify_request_outcome(&terminal_state, observation_timed_out, &observed_outcome)
+            .map(str::to_owned);
+    super::reporting::write_json(
+        &evidence.join(format!("{stage}-outcome.json")),
+        &observed_outcome,
+    )?;
+    write_stage_progress(
+        evidence,
+        stage,
+        "terminal",
+        Some(&request_id),
+        session_id.as_deref(),
+        Some(&terminal_state),
+        &started_at,
+    )?;
     let answer = crate::support::live_inference::wait_for_assistant_answer(
         node,
         &request_id,
@@ -694,6 +1038,8 @@ async fn execute_inner(
         elapsed_ms: started.elapsed().as_millis(),
         answer,
         observation_timed_out,
+        failure_kind,
+        observed_outcome,
     };
     let retention = async {
         std::fs::create_dir_all(evidence).context("create evaluator evidence directory")?;
