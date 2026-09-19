@@ -7,7 +7,7 @@ not the desktop application.
 For Debian 12 or a compatible newer Debian/Ubuntu desktop:
 
 ```sh
-sudo apt install ./gents-desktop_0.18.2_amd64.deb
+sudo apt install ./gents-desktop_0.18.3_amd64.deb
 ```
 
 Launch **Gents** from your application menu, or run `gents-desktop-tauri`.
@@ -21,12 +21,12 @@ requirements for tasks that use them, not for opening onboarding.
 Alternatively, on x86_64 Linux with glibc 2.36 or newer:
 
 ```sh
-chmod +x gents-desktop_0.18.2_x86_64.AppImage
-./gents-desktop_0.18.2_x86_64.AppImage
+chmod +x gents-desktop_0.18.3_x86_64.AppImage
+./gents-desktop_0.18.3_x86_64.AppImage
 ```
 
 AppImage support still depends on host graphics/display facilities. If FUSE is
-unavailable, use `APPIMAGE_EXTRACT_AND_RUN=1 ./gents-desktop_0.18.2_x86_64.AppImage`.
+unavailable, use `APPIMAGE_EXTRACT_AND_RUN=1 ./gents-desktop_0.18.3_x86_64.AppImage`.
 Checksums are supplied in `SHA256SUMS-desktop-linux.txt`.
 
 An AppImage's temporary mount is suitable for the frontend, not a persistent

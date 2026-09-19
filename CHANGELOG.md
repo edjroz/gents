@@ -6,6 +6,12 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
 
 ## Unreleased
 
+## 0.18.3 - 2026-09-18
+
+### Fixed
+
+- Verify Linux desktop sidecars through the canonical `gents version` command.
+
 ## 0.18.2 - 2026-09-18
 
 ### Changed
