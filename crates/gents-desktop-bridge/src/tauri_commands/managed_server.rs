@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 use gents_desktop_core::client::ClientCore;
 use gents_desktop_core::local_runtime::{
@@ -14,6 +14,7 @@ use crate::config::ManagedServerPolicy;
 use crate::contract::MANAGED_SERVER_UPDATED_EVENT;
 use crate::error::{BridgeError, BridgeErrorCode};
 use crate::state::{current_core, DesktopAppState};
+use crate::tauri_commands::service_executable::resolve_service_executable;
 use crate::types::{
     ManagedServerRestartRequest, ManagedServerRootValidation, ManagedServerRootValidationRequest,
     ManagedServerStartRequest, ManagedServerState, ManagedServerStatus, ManagedServerToolCeiling,
@@ -332,12 +333,18 @@ async fn start_managed_server_locked<R: Runtime>(
         .await?;
         ensure_default_port_identity(&agent_home).await?;
         if !initial_native.installed {
-            run_native(native_service(app, state)?, |service| service.install()).await?;
+            run_native(launchable_native_service(app, state)?, |service| {
+                service.install()
+            })
+            .await?;
         }
         // A start can launch the process and then fail restoring login state.
         // Roll back the owned attempt even when that final native step fails.
         attempted_native_start = true;
-        run_native(native_service(app, state)?, |service| service.start(false)).await?;
+        run_native(launchable_native_service(app, state)?, |service| {
+            service.start(false)
+        })
+        .await?;
         let ready = wait_for_managed_server(&agent_home).await?;
         validate_ready_runtime(&ready, &authority, &agent_home)?;
         if current_core(state).is_none() {
@@ -461,131 +468,80 @@ fn native_service<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopAppState,
 ) -> Result<gents_server::native_service::NativeServiceManager, BridgeError> {
+    build_native_service(app, state, false)
+}
+
+/// The service manager to use before a definition is installed or started. A
+/// packaged build copies its runtime out of the temporary mount first, so the
+/// service keeps an executable once the desktop app and its mount are gone.
+fn launchable_native_service<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopAppState,
+) -> Result<gents_server::native_service::NativeServiceManager, BridgeError> {
+    build_native_service(app, state, true)
+}
+
+/// Brings a packaged install up to date at startup. It refreshes the runtime
+/// copied out of the package, then reconciles an already-installed definition
+/// with the one this version writes, so an upgraded application does not leave
+/// a service pointing at the previous release's runtime or environment.
+///
+/// It never installs a service the user has not chosen, and never starts or
+/// stops an agent: a running agent keeps the runtime it launched with until it
+/// is restarted.
+pub(crate) fn refresh_packaged_install<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopAppState,
+) -> Result<(), BridgeError> {
+    if state.policy.agent_home.is_none() {
+        return Ok(());
+    }
+    let executable = resolve_service_executable(app, state.policy.desktop_paths.root())?;
+    if executable.install()? {
+        tracing::info!(
+            target: "gents_desktop::managed_server",
+            runtime = %executable.service_path().display(),
+            "refreshed the Gents runtime from the application package"
+        );
+    }
+    let service = native_service(app, state)?;
+    let status = service.status().map_err(native_error)?;
+    if !status.installed {
+        return Ok(());
+    }
+    if status.is_active_or_transitioning() {
+        // The owner refuses to rewrite a definition under a running service.
+        // The agent adopts this release when it is next restarted.
+        tracing::info!(
+            target: "gents_desktop::managed_server",
+            "agent restart pending before the updated service definition applies"
+        );
+        return Ok(());
+    }
+    service.install().map_err(native_error)
+}
+
+fn build_native_service<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopAppState,
+    install_runtime: bool,
+) -> Result<gents_server::native_service::NativeServiceManager, BridgeError> {
     let home = state.policy.agent_home.clone().ok_or_else(|| {
         BridgeError::new(
             BridgeErrorCode::Unsupported,
             "managed server requires a local agent home",
         )
     })?;
-    let executable = resolve_gents_executable(app)?;
-    let config = gents_server::native_service::NativeServiceConfig::new(home, executable)
-        .map_err(native_error)?;
+    let executable = resolve_service_executable(app, state.policy.desktop_paths.root())?;
+    if install_runtime {
+        executable.install()?;
+    }
+    let config = gents_server::native_service::NativeServiceConfig::new(
+        home,
+        executable.service_path().to_path_buf(),
+    )
+    .map_err(native_error)?;
     gents_server::native_service::NativeServiceManager::new(config).map_err(native_error)
-}
-
-fn resolve_gents_executable<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, BridgeError> {
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
-        return Err(BridgeError::new(
-            BridgeErrorCode::Unsupported,
-            "native Gents services are supported only on macOS and Linux",
-        ));
-    }
-    let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("GENTS_BIN").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(path);
-        if !path.is_absolute() {
-            return Err(BridgeError::new(
-                BridgeErrorCode::InvalidArgument,
-                "GENTS_BIN must be an absolute path",
-            ));
-        }
-        let executable = executable_file(&path)
-            .then(|| std::fs::canonicalize(path).ok())
-            .flatten()
-            .ok_or_else(|| {
-                BridgeError::new(
-                    BridgeErrorCode::InvalidArgument,
-                    "GENTS_BIN must name an existing executable file",
-                )
-            })?;
-        ensure_stable_service_executable(
-            &executable,
-            std::env::var_os("APPDIR").as_deref().map(Path::new),
-            std::env::var_os("APPIMAGE").as_deref().map(Path::new),
-        )?;
-        return Ok(executable);
-    }
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(parent) = current.parent() {
-            candidates.push(parent.join(gents_executable_name()));
-        }
-    }
-    if let Ok(resources) = app.path().resource_dir() {
-        candidates.push(resources.join(gents_executable_name()));
-    }
-    if let Some(search) = std::env::var_os("PATH") {
-        candidates
-            .extend(std::env::split_paths(&search).map(|dir| dir.join(gents_executable_name())));
-    }
-    let fallback = candidates.first().cloned();
-    let executable = candidates
-        .into_iter()
-        .find(|path| executable_file(path))
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .or(fallback)
-        .ok_or_else(|| {
-            BridgeError::new(
-                BridgeErrorCode::Unsupported,
-                "Could not find the Gents runtime executable. Reinstall Gents or set GENTS_BIN to its absolute path.",
-            )
-        })?;
-    ensure_stable_service_executable(
-        &executable,
-        std::env::var_os("APPDIR").as_deref().map(Path::new),
-        std::env::var_os("APPIMAGE").as_deref().map(Path::new),
-    )?;
-    Ok(executable)
-}
-
-fn ensure_stable_service_executable(
-    executable: &Path,
-    app_dir: Option<&Path>,
-    app_image: Option<&Path>,
-) -> Result<(), BridgeError> {
-    // Extracted AppRun also sets APPDIR. Only an active AppImage launcher
-    // (APPIMAGE present) makes that directory a temporary runtime location.
-    let inside_app_dir =
-        app_image.is_some() && app_dir.is_some_and(|root| executable.starts_with(root));
-    let looks_like_appimage_mount = app_image.is_some()
-        && executable.components().any(|component| {
-            component
-                .as_os_str()
-                .to_string_lossy()
-                .starts_with(".mount_")
-        });
-    if inside_app_dir || looks_like_appimage_mount {
-        return Err(BridgeError::new(
-            BridgeErrorCode::Unsupported,
-            "The Gents CLI inside a mounted AppImage is temporary and cannot own a persistent user service. Install the .deb package or extract the AppImage to a stable location first.",
-        ));
-    }
-    Ok(())
-}
-
-fn gents_executable_name() -> &'static str {
-    if cfg!(windows) {
-        "gents.exe"
-    } else {
-        "gents"
-    }
-}
-
-fn executable_file(path: &Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 fn native_error(error: anyhow::Error) -> BridgeError {
@@ -1027,7 +983,7 @@ pub async fn desktop_managed_server_restart<R: Runtime>(
             return Err(BridgeError::untyped(message));
         }
     }
-    if let Err(error) = run_native(native_service(&app, &state)?, move |service| {
+    if let Err(error) = run_native(launchable_native_service(&app, &state)?, move |service| {
         service.start(was_enabled)
     })
     .await
@@ -1478,35 +1434,6 @@ mod tests {
         );
         assert!(combined.contains("readiness failed"));
         assert!(combined.contains("stop failed"));
-    }
-
-    #[test]
-    fn appimage_mount_cannot_be_persisted_as_service_executable() {
-        assert!(ensure_stable_service_executable(
-            Path::new("/opt/gents/squashfs-root/usr/bin/gents"),
-            Some(Path::new("/opt/gents/squashfs-root")),
-            None,
-        )
-        .is_ok());
-        let mounted = Path::new("/tmp/.mount_Gents123/usr/bin/gents");
-        assert!(ensure_stable_service_executable(
-            mounted,
-            Some(Path::new("/tmp/.mount_Gents123")),
-            Some(Path::new("/downloads/Gents.AppImage")),
-        )
-        .is_err());
-        assert!(ensure_stable_service_executable(
-            mounted,
-            None,
-            Some(Path::new("/downloads/Gents.AppImage")),
-        )
-        .is_err());
-        assert!(ensure_stable_service_executable(
-            Path::new("/opt/gents/gents"),
-            Some(Path::new("/tmp/.mount_Gents123")),
-            Some(Path::new("/downloads/Gents.AppImage")),
-        )
-        .is_ok());
     }
 
     #[test]

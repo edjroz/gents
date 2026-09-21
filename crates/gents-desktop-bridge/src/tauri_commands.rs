@@ -8,6 +8,7 @@ pub mod mailbox;
 pub mod managed_server;
 pub mod operations;
 pub mod peers;
+pub(crate) mod service_executable;
 pub mod tasks;
 pub mod tools_explain;
 
