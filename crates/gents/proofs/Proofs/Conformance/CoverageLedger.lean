@@ -493,7 +493,12 @@ def stateMachineCoverage : List CoverageEntry :=
   ]
 
 def caseCoverage : List CoverageEntry :=
-  [ tagged (consumerWithFollowUp
+  [ tagged (consumerCoverage
+      "root_admission_cases"
+      "RootAdmissionCases"
+      "conformance::persona_request::generated_root_admission_cases_drive_production_root_policy")
+      "apply-reconcile" [Surface.agentFacing, Surface.runtimeInternal]
+  , tagged (consumerWithFollowUp
       "pairing_reconcile_cases"
       "PairingReconcileCases"
       "conformance::pairing_reconcile::generated_pairing_reconcile_cases_drive_production_projector"
