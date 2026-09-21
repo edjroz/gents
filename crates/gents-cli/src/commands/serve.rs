@@ -700,6 +700,10 @@ async fn serve_foreground(mut args: ServeArgs) -> Result<()> {
         graphql_url.clone(),
         agent_name.clone(),
         identity.did().to_string(),
+        format_tool_ceiling(effective_tool_ceiling).to_string(),
+        effective_tool_root
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
         mcp_query_scope,
         Some(backend_health.clone()),
         p2p_admission_state.clone(),

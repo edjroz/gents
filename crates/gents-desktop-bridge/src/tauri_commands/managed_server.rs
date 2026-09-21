@@ -442,17 +442,24 @@ fn validate_ready_runtime(
                 .filter(|did| !did.trim().is_empty())
                 .map(str::to_owned)
         });
+    let expected_root = authority
+        .tool_root
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
     if expected_did.is_none()
         || status.agent_did.as_deref() != expected_did.as_deref()
         || status.effective_tool_ceiling != Some(authority.tool_ceiling)
-        || status.effective_tool_root.as_deref()
-            != authority
-                .tool_root
-                .as_ref()
-                .map(|path| path.to_string_lossy())
-                .as_deref()
+        || status.effective_tool_root.as_deref() != expected_root.as_deref()
     {
-        anyhow::bail!("native runtime readiness did not match the initialized identity and reviewed host authority");
+        anyhow::bail!(
+            "native runtime readiness did not match the initialized identity and reviewed host authority (live did={:?} ceiling={:?} root={:?}; expected did={:?} ceiling={:?} root={:?})",
+            status.agent_did,
+            status.effective_tool_ceiling,
+            status.effective_tool_root,
+            expected_did,
+            Some(authority.tool_ceiling),
+            expected_root
+        );
     }
     Ok(())
 }
@@ -1146,8 +1153,8 @@ fn suggested_tool_root() -> Option<String> {
 }
 
 fn parse_tool_ceiling(value: &str) -> Option<ManagedServerToolCeiling> {
-    match value {
-        "meta-only" => Some(ManagedServerToolCeiling::MetaOnly),
+    match value.trim().to_ascii_lowercase().as_str() {
+        "meta-only" | "metaonly" | "meta_only" => Some(ManagedServerToolCeiling::MetaOnly),
         "readonly" => Some(ManagedServerToolCeiling::Readonly),
         "readwrite" => Some(ManagedServerToolCeiling::Readwrite),
         _ => None,
@@ -1478,6 +1485,63 @@ mod tests {
         );
         assert!(combined.contains("readiness failed"));
         assert!(combined.contains("stop failed"));
+    }
+
+    #[test]
+    fn parse_tool_ceiling_accepts_init_json_and_status_spellings() {
+        assert_eq!(
+            parse_tool_ceiling("readwrite"),
+            Some(ManagedServerToolCeiling::Readwrite)
+        );
+        assert_eq!(
+            parse_tool_ceiling("Readwrite"),
+            Some(ManagedServerToolCeiling::Readwrite)
+        );
+        assert_eq!(
+            parse_tool_ceiling("readonly"),
+            Some(ManagedServerToolCeiling::Readonly)
+        );
+        assert_eq!(
+            parse_tool_ceiling("meta-only"),
+            Some(ManagedServerToolCeiling::MetaOnly)
+        );
+        assert_eq!(parse_tool_ceiling("unknown"), None);
+    }
+
+    #[test]
+    fn ready_runtime_requires_live_status_to_carry_reviewed_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("init.json"),
+            r#"{"agent_did":"did:key:zReady"}"#,
+        )
+        .unwrap();
+        let authority = EffectiveManagedAuthority {
+            tool_ceiling: ManagedServerToolCeiling::Readwrite,
+            tool_root: Some(PathBuf::from("/Users/test")),
+        };
+        let missing_authority = ManagedServerStatus {
+            state: ManagedServerState::Running,
+            auto_start: false,
+            agent_name: Some("Mandrake".into()),
+            agent_did: Some("did:key:zReady".into()),
+            graphql: Some("http://127.0.0.1:9191/api/v0/graphql".into()),
+            effective_tool_ceiling: None,
+            effective_tool_root: None,
+            suggested_tool_root: None,
+            pairing_ready: false,
+            error: None,
+        };
+        let error = validate_ready_runtime(&missing_authority, &authority, temp.path())
+            .expect_err("missing /status authority must fail closed");
+        assert!(error.to_string().contains("live did="));
+
+        let ready = ManagedServerStatus {
+            effective_tool_ceiling: Some(ManagedServerToolCeiling::Readwrite),
+            effective_tool_root: Some("/Users/test".into()),
+            ..missing_authority
+        };
+        validate_ready_runtime(&ready, &authority, temp.path()).unwrap();
     }
 
     #[test]

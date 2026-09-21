@@ -369,6 +369,8 @@ mod tests {
             graphql,
             "r5-dispatch-test-agent".to_string(),
             "did:key:z6Mkr5dispatchtest".to_string(),
+            "readwrite".to_string(),
+            None,
             None,
             None,
             None,

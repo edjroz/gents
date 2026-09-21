@@ -319,4 +319,5 @@ jobs:
               --notes "gents release artifacts." \
               || gh release view "${GITHUB_REF_NAME}" >/dev/null
           fi
-          gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.build-metrics.json --clobber
+          # User-facing CLI only. build-metrics stay on the workflow artifact.
+          gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.tar.gz.sha256 --clobber

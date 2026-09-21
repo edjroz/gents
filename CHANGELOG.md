@@ -6,6 +6,24 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
 
 ## Unreleased
 
+## 0.18.4 - 2026-09-21
+
+### Fixed
+
+- Advertise live `tool_ceiling` and `tool_root` on `GET /status` so desktop
+  start can match the initialized identity and reviewed host authority. 0.18.3
+  omitted those fields and failed first-run and existing-home start with
+  "native runtime readiness did not match".
+- Continue an existing `~/.gents` home in desktop setup instead of presenting
+  it as a brand-new agent.
+
+### Changed
+
+- GitHub Releases now ship only user-facing installers and CLI archives: macOS
+  DMG, Linux `.deb`/AppImage, platform `gents-*.tar.gz` plus checksums and
+  install notes. dSYM, build-metrics, and desktop npm tarballs remain workflow
+  artifacts.
+
 ## 0.18.3 - 2026-09-18
 
 ### Fixed

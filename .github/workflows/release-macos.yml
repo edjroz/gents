@@ -664,12 +664,11 @@ jobs:
               --notes "Signed gents macOS release artifact." \
               || gh release view "${GITHUB_REF_NAME}" >/dev/null
           fi
+          # User-facing CLI only. dSYM and build-metrics stay on the workflow
+          # artifact for support; they are not GitHub Release assets.
           gh release upload "${GITHUB_REF_NAME}" \
             "${TARBALL}" \
             "${CHECKSUM_FILE}" \
-            "${DSYM_TARBALL}" \
-            "${DSYM_CHECKSUM_FILE}" \
-            "${METRICS_FILE}" \
             --clobber
 
       - uses: actions/setup-node@v6
