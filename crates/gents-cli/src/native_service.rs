@@ -101,8 +101,9 @@ impl NativeServiceConfig {
 
 /// Whether a path lives inside a package mount that exists only while the
 /// application that launched it runs, such as an AppImage's mount. A service
-/// definition outlives that mount, so it must never record one. Callers that
-/// resolve an executable use the same test, so both agree on what is durable.
+/// definition outlives that mount, so it must never record one.
+/// [`NativeServiceManager::install`] and the desktop executable classifier
+/// both use this test.
 pub fn inside_temporary_package(
     path: &Path,
     app_dir: Option<&Path>,
@@ -138,6 +139,23 @@ fn forwarded_search_path(
     std::env::join_paths(durable)
         .ok()
         .filter(|value| !value.is_empty())
+}
+
+/// Refuses an executable that would disappear with the AppImage mount.
+/// Recording it as `ExecStart` lets a later process recreate the vacated
+/// directory and be launched directly.
+pub fn ensure_durable_service_executable(
+    executable: &Path,
+    app_dir: Option<&Path>,
+    app_image: Option<&Path>,
+) -> Result<()> {
+    if inside_temporary_package(executable, app_dir, app_image) {
+        bail!(
+            "the Gents executable at {} is inside a temporary AppImage mount and cannot be recorded as a service executable. Open the desktop app so it can install a durable runtime, or pass --executable pointing at a .deb or extracted install.",
+            executable.display()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -282,6 +300,11 @@ impl<R: CommandRunner> NativeServiceManager<R> {
 
     pub fn install(&self) -> Result<()> {
         validate_config(&self.config)?;
+        ensure_durable_service_executable(
+            &self.config.executable,
+            std::env::var_os("APPDIR").as_deref().map(Path::new),
+            std::env::var_os("APPIMAGE").as_deref().map(Path::new),
+        )?;
         let path = self.config.definition_path(self.platform);
         let parent = path
             .parent()
@@ -1110,6 +1133,30 @@ mod tests {
             None,
             None
         ));
+    }
+
+    #[test]
+    fn a_mounted_executable_cannot_be_recorded_as_the_service_runtime() {
+        let mount = Path::new("/tmp/.mount_gents123");
+        let image = Path::new("/home/user/.local/bin/Gents.AppImage");
+        let error = ensure_durable_service_executable(
+            &mount.join("usr/bin/gents"),
+            Some(mount),
+            Some(image),
+        )
+        .expect_err("mount");
+        assert!(error.to_string().contains("temporary AppImage"), "{error}");
+        assert!(ensure_durable_service_executable(
+            Path::new("/usr/bin/gents"),
+            Some(mount),
+            Some(image),
+        )
+        .is_ok());
+        // No active launcher: an extracted tree is as durable as the user left it.
+        assert!(
+            ensure_durable_service_executable(&mount.join("usr/bin/gents"), Some(mount), None,)
+                .is_ok()
+        );
     }
 
     #[test]

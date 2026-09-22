@@ -34,10 +34,10 @@ An AppImage's mount is temporary, so the app copies its runtime to
 copy. The copy needs about 130 MB. No extraction step is required, and the
 AppImage can be moved or renamed afterwards.
 
-Opening a newer AppImage refreshes that copy and updates the installed service
-definition, so an upgrade does not leave the background agent on the previous
-release. An agent that is already running keeps the runtime it started with
-until you stop it, restart it, or log in again.
+Opening a newer AppImage refreshes that copy. When the background agent is
+stopped, the app also updates the installed service definition. An agent that
+is already running keeps its current definition until you restart it from the
+app, which writes the new definition before starting it again.
 
 Choose a local managed agent, review its tool root and authority, then connect an
 inference provider. Local inference must be reachable from your own machine;

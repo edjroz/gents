@@ -332,12 +332,13 @@ async fn start_managed_server_locked<R: Runtime>(
         )
         .await?;
         ensure_default_port_identity(&agent_home).await?;
-        if !initial_native.installed {
-            run_native(launchable_native_service(app, state)?, |service| {
-                service.install()
-            })
-            .await?;
-        }
+        // Install even when a unit file already exists. `install` leaves a
+        // matching definition alone and refuses while the service is active.
+        // A stopped unit can still name a previous mount or runtime.
+        run_native(launchable_native_service(app, state)?, |service| {
+            service.install()
+        })
+        .await?;
         // A start can launch the process and then fail restoring login state.
         // Roll back the owned attempt even when that final native step fails.
         attempted_native_start = true;
@@ -487,8 +488,8 @@ fn launchable_native_service<R: Runtime>(
 /// a service pointing at the previous release's runtime or environment.
 ///
 /// It never installs a service the user has not chosen, and never starts or
-/// stops an agent: a running agent keeps the runtime it launched with until it
-/// is restarted.
+/// stops an agent. A running agent keeps the definition it launched with.
+/// Start and restart install the current definition before they launch it.
 pub(crate) fn refresh_packaged_install<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopAppState,
@@ -496,6 +497,9 @@ pub(crate) fn refresh_packaged_install<R: Runtime>(
     if state.policy.agent_home.is_none() {
         return Ok(());
     }
+    // The setup thread is outside the async runtime. Waiting here keeps a
+    // start or restart from launching the definition this refresh replaces.
+    let _lifecycle = state.managed_server_lifecycle.blocking_lock();
     let executable = resolve_service_executable(app, state.policy.desktop_paths.root())?;
     if executable.install()? {
         tracing::info!(
@@ -510,8 +514,8 @@ pub(crate) fn refresh_packaged_install<R: Runtime>(
         return Ok(());
     }
     if status.is_active_or_transitioning() {
-        // The owner refuses to rewrite a definition under a running service.
-        // The agent adopts this release when it is next restarted.
+        // `install` refuses a live Linux job, and on macOS it bootouts a
+        // loaded job whose definition differs. Leave that job alone.
         tracing::info!(
             target: "gents_desktop::managed_server",
             "agent restart pending before the updated service definition applies"
@@ -984,6 +988,7 @@ pub async fn desktop_managed_server_restart<R: Runtime>(
         }
     }
     if let Err(error) = run_native(launchable_native_service(&app, &state)?, move |service| {
+        service.install()?;
         service.start(was_enabled)
     })
     .await

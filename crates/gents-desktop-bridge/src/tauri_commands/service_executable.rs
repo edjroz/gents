@@ -23,6 +23,12 @@ const INCOMING_PREFIX: &str = ".incoming.";
 /// How long a staged copy must sit untouched before it counts as abandoned.
 const ABANDONED_COPY_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// Refresh and start run in one process. One lock keeps them from publishing
+/// the same destination at the same time.
+static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+static INSTALL_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A resolved runtime executable and what it takes to make a service own it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ServiceExecutable {
@@ -150,8 +156,9 @@ fn classify_with_package(
 /// Copies the packaged runtime to its durable path, keyed by content so an
 /// upgraded package refreshes it and an unchanged one costs only a read.
 fn install_packaged_executable(source: &Path, installed: &Path) -> std::io::Result<bool> {
-    // vertexia: digests both files on every start; compare length and
-    // modification time first if that read ever costs a visible startup delay.
+    let _guard = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if already_installed(source, installed)? {
         return Ok(false);
     }
@@ -161,15 +168,20 @@ fn install_packaged_executable(source: &Path, installed: &Path) -> std::io::Resu
     std::fs::create_dir_all(directory)?;
     // A running service holds the previous inode open, so new bytes land
     // beside it and are renamed over it. Writing the path in place would fail
-    // with ETXTBSY.
-    let incoming = directory.join(format!("{INCOMING_PREFIX}{}", std::process::id()));
+    // with ETXTBSY. The attempt number keeps two callers in this process from
+    // sharing one staging file: a rename would then publish a short file.
+    let attempt = INSTALL_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let incoming = directory.join(format!("{INCOMING_PREFIX}{}.{attempt}", std::process::id()));
     discard_abandoned_copies(directory);
     let staged = stage(source, &incoming);
     if staged.is_err() {
         let _ = std::fs::remove_file(&incoming);
     }
     staged?;
-    std::fs::rename(&incoming, installed)?;
+    if let Err(error) = std::fs::rename(&incoming, installed) {
+        let _ = std::fs::remove_file(&incoming);
+        return Err(error);
+    }
     Ok(true)
 }
 
@@ -177,12 +189,30 @@ fn install_packaged_executable(source: &Path, installed: &Path) -> std::io::Resu
 /// copy itself, rather than a record of what was written, stays true whichever
 /// build wrote it last and whatever interrupted the write.
 fn already_installed(source: &Path, installed: &Path) -> std::io::Result<bool> {
-    // Nothing to compare against, so the copy reads the package instead of a
-    // digest of it. An unreadable package fails there.
-    if !executable_file(installed) {
+    // A symlink is not the copy. Following it would treat the link target as
+    // installed and let the service definition record that target.
+    if !regular_executable(installed) {
         return Ok(false);
     }
     Ok(content_digest(installed).ok() == Some(content_digest(source)?))
+}
+
+fn regular_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Removes copies a killed process left mid-write, so a crash costs one
@@ -216,14 +246,28 @@ fn discard_abandoned_copies(directory: &Path) {
 }
 
 fn stage(source: &Path, incoming: &Path) -> std::io::Result<()> {
-    std::fs::copy(source, incoming)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(incoming, std::fs::Permissions::from_mode(0o700))?;
+    // `create_new` fails if the name exists, including when it is a symlink,
+    // so the write cannot be redirected at a path someone else planted.
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(incoming)?;
+    let copied = (|| {
+        let mut input = std::fs::File::open(source)?;
+        std::io::copy(&mut input, &mut output)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            output.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        }
+        // Durable before the rename, so a crash cannot publish a short file.
+        output.sync_all()
+    })();
+    if copied.is_err() {
+        drop(output);
+        let _ = std::fs::remove_file(incoming);
     }
-    // Durable before the rename, so a crash cannot publish a short file.
-    std::fs::File::open(incoming)?.sync_all()
+    copied
 }
 
 /// Streams the file so a large packaged runtime costs one buffer, not its size.
@@ -409,6 +453,80 @@ mod tests {
             "a copy another process may still be writing must be left alone"
         );
         assert!(runtime.exists(), "the runtime itself is never swept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_installs_publish_a_complete_runtime() {
+        let temp = tempfile::tempdir().expect("temporary roots");
+        let source = temp.path().join("mount/usr/bin/gents");
+        std::fs::create_dir_all(source.parent().expect("mount directory")).expect("mount");
+        std::fs::write(&source, b"packaged runtime").expect("packaged runtime");
+        let executable = ServiceExecutable::Packaged {
+            installed: temp.path().join("desktop").join(RUNTIME_DIR).join("gents"),
+            source,
+        };
+        let installed = executable.service_path().to_path_buf();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    executable.install().expect("install");
+                });
+            }
+        });
+        assert_eq!(
+            std::fs::read(&installed).expect("installed runtime"),
+            b"packaged runtime"
+        );
+        assert!(regular_executable(&installed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_runtime_path_is_replaced_with_the_packaged_bytes() {
+        let temp = tempfile::tempdir().expect("temporary roots");
+        let source = temp.path().join("mount/usr/bin/gents");
+        std::fs::create_dir_all(source.parent().expect("mount directory")).expect("mount");
+        std::fs::write(&source, b"packaged runtime").expect("packaged runtime");
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::write(&elsewhere, b"not the runtime").expect("link target");
+        let executable = ServiceExecutable::Packaged {
+            installed: temp.path().join("desktop").join(RUNTIME_DIR).join("gents"),
+            source,
+        };
+        let installed = executable.service_path().to_path_buf();
+        std::fs::create_dir_all(installed.parent().expect("runtime directory")).expect("runtime");
+        std::os::unix::fs::symlink(&elsewhere, &installed).expect("symlink");
+
+        executable.install().expect("replace symlink");
+
+        assert!(std::fs::symlink_metadata(&installed)
+            .expect("installed metadata")
+            .file_type()
+            .is_file());
+        assert_eq!(
+            std::fs::read(&installed).expect("installed runtime"),
+            b"packaged runtime"
+        );
+        assert_eq!(
+            std::fs::read(&elsewhere).expect("link target"),
+            b"not the runtime"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_does_not_follow_a_symlink() {
+        let temp = tempfile::tempdir().expect("temporary roots");
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let incoming = temp.path().join(".incoming.planted");
+        std::fs::write(&source, b"packaged runtime").expect("source");
+        std::fs::write(&target, b"original").expect("target");
+        std::os::unix::fs::symlink(&target, &incoming).expect("symlink");
+
+        assert!(stage(&source, &incoming).is_err());
+        assert_eq!(std::fs::read(&target).expect("target"), b"original");
     }
 
     #[test]
