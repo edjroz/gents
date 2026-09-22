@@ -328,7 +328,7 @@ export function SetupScreen({
   const [address, setAddress] = useState("");
   const existingHome = Boolean(
     shell.snapshot?.bootstrap.agentHomeExists &&
-      shell.snapshot?.bootstrap.initAgentDid?.trim(),
+    shell.snapshot?.bootstrap.initAgentDid?.trim(),
   );
   const [name, setName] = useState(
     shell.snapshot?.bootstrap.initAgentName?.trim() || "Forge",
@@ -336,10 +336,9 @@ export function SetupScreen({
   const [homeRoot, setHomeRoot] = useState<string | null>(
     api.managedServerStatus ? null : (shell.snapshot?.bootstrap.initToolRoot ?? null),
   );
-  const [toolCeiling, setToolCeiling] =
-    useState<ManagedServerAuthorityInput["toolCeiling"]>(() =>
-      ceilingFromInit(shell.snapshot?.bootstrap.initToolCeiling),
-    );
+  const [toolCeiling, setToolCeiling] = useState<
+    ManagedServerAuthorityInput["toolCeiling"]
+  >(() => ceilingFromInit(shell.snapshot?.bootstrap.initToolCeiling));
   const [selectedDirectory, setSelectedDirectory] = useState<string | null | undefined>(
     shell.snapshot?.bootstrap.initToolRoot ?? undefined,
   );
