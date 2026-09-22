@@ -46,6 +46,9 @@ pub struct NativeServiceConfig {
     /// service, so configured host tools remain discoverable after detaching
     /// from a terminal. No other caller environment is serialized.
     pub search_path: Option<OsString>,
+    /// Desktop bundle that owns this agent. macOS Login Items otherwise
+    /// names the background item after the code-signing identity.
+    pub associated_bundle_id: Option<String>,
 }
 
 impl NativeServiceConfig {
@@ -86,6 +89,7 @@ impl NativeServiceConfig {
                 std::env::var_os("APPDIR").as_deref().map(Path::new),
                 std::env::var_os("APPIMAGE").as_deref().map(Path::new),
             ),
+            associated_bundle_id: None,
         })
     }
 
@@ -777,6 +781,19 @@ fn render_launchd(config: &NativeServiceConfig) -> Result<String> {
         .transpose()?
         .unwrap_or_default();
     let environment = format!("\n  <key>EnvironmentVariables</key>\n  <dict><key>GENTS_SYSTEM_LOG</key><string>1</string>{search_path}</dict>");
+    // Without this, macOS attributes the LaunchAgent to the signing
+    // certificate's personal name instead of the desktop app.
+    let associated_bundle = config
+        .associated_bundle_id
+        .as_deref()
+        .map(|bundle_id| -> Result<String> {
+            Ok(format!(
+                "\n  <key>AssociatedBundleIdentifiers</key><array><string>{}</string></array>",
+                xml_escape(bundle_id)?
+            ))
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -784,7 +801,7 @@ fn render_launchd(config: &NativeServiceConfig) -> Result<String> {
   <key>Label</key><string>{SERVICE_LABEL}</string>
   <key>ProgramArguments</key><array>
     <string>{executable}</string><string>server</string><string>--home</string><string>{home}</string>
-  </array>{environment}
+  </array>{environment}{associated_bundle}
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
@@ -1098,6 +1115,7 @@ mod tests {
             user_home: root.to_owned(),
             service_config_dir: root.join("service-config"),
             search_path: Some("/a path/bin:/usr/bin".into()),
+            associated_bundle_id: None,
         }
     }
 
@@ -1198,7 +1216,19 @@ mod tests {
         assert!(plist.contains("<string>--home</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
         assert!(!plist.contains("sh -c"));
+        assert!(!plist.contains("AssociatedBundleIdentifiers"));
         assert_eq!(launchd_home(&plist).unwrap(), config.home.to_string_lossy());
+    }
+
+    #[test]
+    fn launchd_definition_attributes_a_desktop_agent_to_the_app() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = config(temp.path());
+        config.associated_bundle_id = Some("com.source-inc.gents".to_string());
+        let plist = render_launchd(&config).unwrap();
+        assert!(plist.contains(
+            "<key>AssociatedBundleIdentifiers</key><array><string>com.source-inc.gents</string></array>"
+        ));
     }
 
     #[test]

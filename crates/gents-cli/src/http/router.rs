@@ -28,6 +28,10 @@ use gents::defra_query::CollectionScope;
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const P2P_METRICS_FETCH_BUDGET: Duration = Duration::from_millis(750);
+/// Identity fields on `/status` have to come back before a caller's own
+/// timeout. GraphQL and P2P probes can sit for much longer while the node
+/// is still opening, which made desktop readiness look like a dead server.
+const STATUS_PROBE_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub(crate) struct RuntimeHttpState {
@@ -442,14 +446,27 @@ fn p2p_metrics_from_status(
 }
 
 async fn status_handler(State(state): State<RuntimeHttpState>) -> Response {
-    let mut p2p = crate::commands::p2p::load_live_http_p2p_status(None, &state.graphql).await;
+    let mut p2p = match tokio::time::timeout(
+        P2P_METRICS_FETCH_BUDGET,
+        crate::commands::p2p::load_live_http_p2p_status(None, &state.graphql),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_) => json!({ "p2p_error": "timed out while the runtime was still starting" }),
+    };
     if let Some(admission) = state.p2p_admission.as_ref() {
         if let Some(map) = p2p.as_object_mut() {
             map.insert("p2p_admission".to_string(), admission.to_json());
         }
     }
-    let mut body = match load_metrics_query_data(&state.graphql, &state.agent_did).await {
-        Ok(data) => {
+    let metrics = tokio::time::timeout(
+        STATUS_PROBE_BUDGET,
+        load_metrics_query_data(&state.graphql, &state.agent_did),
+    )
+    .await;
+    let mut body = match metrics {
+        Ok(Ok(data)) => {
             let data = with_local_native_executors(data);
             let health = render_healthz_payload(&state, Some(&data), None);
             let runtime = data
@@ -475,7 +492,7 @@ async fn status_handler(State(state): State<RuntimeHttpState>) -> Response {
                 "p2p": p2p.clone(),
             })
         }
-        Err(error) => json!({
+        Ok(Err(error)) => json!({
             "status": "unhealthy",
             "ok": false,
             "service": "gents",
@@ -493,11 +510,32 @@ async fn status_handler(State(state): State<RuntimeHttpState>) -> Response {
             "p2p": p2p.clone(),
             "error": error.to_string(),
         }),
+        Err(_) => json!({
+            "status": "starting",
+            "ok": false,
+            "service": "gents",
+            "version": version_response().version,
+            "started_at": state.started_at,
+            "uptime_seconds": state.started_instant.elapsed().as_secs(),
+            "graphql": state.graphql,
+            "agent_name": state.agent_name,
+            "agent_did": state.agent_did,
+            "tool_ceiling": state.tool_ceiling,
+            "tool_root": state.tool_root,
+            "runtime": Value::Null,
+            "runtimes": [],
+            "backends": [],
+            "p2p": p2p.clone(),
+            "error": "runtime metrics were not ready",
+        }),
     };
 
     if body.get("error").is_none() {
-        if let Ok((behaviors, context_budget, context)) =
-            load_self_view(&state.graphql, &state.agent_did).await
+        if let Ok(Ok((behaviors, context_budget, context))) = tokio::time::timeout(
+            STATUS_PROBE_BUDGET,
+            load_self_view(&state.graphql, &state.agent_did),
+        )
+        .await
         {
             if let Some(map) = body.as_object_mut() {
                 map.insert("behaviors".to_string(), json!(behaviors));

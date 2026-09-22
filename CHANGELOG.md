@@ -22,6 +22,10 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
   that copy. Opening a newer AppImage refreshes the copy, and start or
   restart rewrites a stopped service definition so it does not keep a
   temporary `/tmp/.mount_*` path.
+- Desktop startup treats a managed service as ready once it publishes its
+  identity, instead of waiting out GraphQL probes that are still starting.
+  On macOS the background item is attributed to Gents rather than the
+  code-signing name.
 - Admit a tool root that is a real descendant of the reviewed root, and reject
   sibling prefixes, traversal, and paths that escape the anchor.
 
