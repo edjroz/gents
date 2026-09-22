@@ -364,7 +364,7 @@
     "desktop://managed-server-tray-stop",
     "desktop://managed-server-tray-restart"
   ],
-  "packageVersion": "0.18.4",
+  "packageVersion": "0.18.5",
   "permissionSets": [
     {
       "kind": "bundle",

@@ -6,6 +6,25 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
 
 ## Unreleased
 
+## 0.18.5 - 2026-09-22
+
+### Added
+
+- `gents cloud login --cloud <host>` signs this machine in to a gents cloud
+  with a device code and stores the workspace token as an `OAuthCredential`.
+- Self-config can preview a native graph proposal through the existing graph
+  permission gate without publishing it.
+
+### Fixed
+
+- An AppImage desktop install copies its runtime to
+  `~/.local/share/gents/desktop/runtime/gents` and runs the user service from
+  that copy. Opening a newer AppImage refreshes the copy, and start or
+  restart rewrites a stopped service definition so it does not keep a
+  temporary `/tmp/.mount_*` path.
+- Admit a tool root that is a real descendant of the reviewed root, and reject
+  sibling prefixes, traversal, and paths that escape the anchor.
+
 ## 0.18.4 - 2026-09-21
 
 ### Fixed
