@@ -1,6 +1,6 @@
 # macOS desktop installation
 
-On an Apple Silicon Mac, download `gents-desktop_0.18.3_aarch64.dmg` from the
+On an Apple Silicon Mac, download `gents-desktop_0.18.5_aarch64.dmg` from the
 GitHub release. Open the disk image, drag **Gents** to **Applications**, and launch
 it from there. Intel Macs are not included in this release.
 
@@ -13,7 +13,9 @@ are in `SHA256SUMS-desktop-macos.txt`. Do not disable Gatekeeper or strip quaran
 to work around an installation failure; report the macOS version and exact error.
 
 Choose a local managed agent, review its tool root and permissions, then connect
-inference. Provider accounts and local inference servers are supplied by the user.
+inference. If `~/.gents` already exists, setup reuses that identity, tool
+ceiling, and native LaunchAgent instead of initializing a second agent. Provider
+accounts and local inference servers are supplied by the user.
 Git and language toolchains are needed only for tasks that use them.
 
 Gents installs a per-user LaunchAgent, not a root daemon. The agent runs

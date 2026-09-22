@@ -70,6 +70,7 @@ fn config(root: &Path, name: &str) -> NativeServiceConfig {
         user_home: root.to_path_buf(),
         service_config_dir: root.join("service-definitions"),
         search_path: Some("/reviewed/bin:/usr/bin".into()),
+        associated_bundle_id: None,
     }
 }
 
@@ -287,6 +288,7 @@ fn status_for_missing_definition_does_not_create_home_or_service_directories() -
         user_home: root.clone(),
         service_config_dir: root.join("service-definitions"),
         search_path: None,
+        associated_bundle_id: None,
     };
     let status = manager(
         config,
@@ -333,6 +335,7 @@ fn stop_for_missing_definition_is_a_noop_without_host_mutation() -> Result<()> {
         user_home: root.clone(),
         service_config_dir: root.join("service-definitions"),
         search_path: None,
+        associated_bundle_id: None,
     };
     let runner = ScriptedRunner::default();
     manager(config, NativeServicePlatform::Linux, runner.clone()).stop(true)?;

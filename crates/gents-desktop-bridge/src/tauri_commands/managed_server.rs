@@ -422,17 +422,66 @@ impl From<ManagedServerToolCeiling> for gents_server::server_host::ManagedToolCe
     }
 }
 
+const MANAGED_SERVER_READY_TIMEOUT: Duration = Duration::from_secs(120);
+
 async fn wait_for_managed_server(agent_home: &Path) -> anyhow::Result<ManagedServerStatus> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + MANAGED_SERVER_READY_TIMEOUT;
     loop {
-        if let Some(status) = matching_external_server(agent_home).await? {
-            return Ok(status);
+        match observe_port_readiness(agent_home).await? {
+            PortReadiness::Ready(status) => return Ok(status),
+            PortReadiness::Foreign { port, live_did } => {
+                let who = if live_did.trim().is_empty() {
+                    "a listener that did not advertise an identity".to_string()
+                } else {
+                    format!("a different Gents identity ({live_did})")
+                };
+                anyhow::bail!(
+                    "port {port} is already in use by {who}. Stop that server before starting the managed agent."
+                );
+            }
+            PortReadiness::NotListening => {}
         }
         if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!("native Gents service started, but runtime readiness timed out");
+            anyhow::bail!(
+                "native Gents service started, but it did not publish runtime readiness within {} seconds",
+                MANAGED_SERVER_READY_TIMEOUT.as_secs()
+            );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+enum PortReadiness {
+    Ready(ManagedServerStatus),
+    Foreign { port: u16, live_did: String },
+    NotListening,
+}
+
+async fn observe_port_readiness(
+    agent_home: &std::path::Path,
+) -> Result<PortReadiness, BridgeError> {
+    let config = gents_server::server_host::ServerConfig::standard(agent_home.to_path_buf());
+    let Some(payload) = default_port_payload(Some(agent_home)).await? else {
+        return Ok(PortReadiness::NotListening);
+    };
+    let live_did = payload
+        .get("agent_did")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !gents_server::server_host::initialized_home(agent_home) {
+        return Ok(PortReadiness::NotListening);
+    }
+    let initialized_did = read_initialized_did(agent_home).await;
+    if ensure_matching_identity(initialized_did.as_deref(), &live_did, config.http_port).is_err() {
+        return Ok(PortReadiness::Foreign {
+            port: config.http_port,
+            live_did,
+        });
+    }
+    Ok(PortReadiness::Ready(managed_status_from_payload(
+        payload, &live_did,
+    )))
 }
 
 fn validate_ready_runtime(
@@ -450,17 +499,24 @@ fn validate_ready_runtime(
                 .filter(|did| !did.trim().is_empty())
                 .map(str::to_owned)
         });
+    let expected_root = authority
+        .tool_root
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
     if expected_did.is_none()
         || status.agent_did.as_deref() != expected_did.as_deref()
         || status.effective_tool_ceiling != Some(authority.tool_ceiling)
-        || status.effective_tool_root.as_deref()
-            != authority
-                .tool_root
-                .as_ref()
-                .map(|path| path.to_string_lossy())
-                .as_deref()
+        || status.effective_tool_root.as_deref() != expected_root.as_deref()
     {
-        anyhow::bail!("native runtime readiness did not match the initialized identity and reviewed host authority");
+        anyhow::bail!(
+            "native runtime readiness did not match the initialized identity and reviewed host authority (live did={:?} ceiling={:?} root={:?}; expected did={:?} ceiling={:?} root={:?})",
+            status.agent_did,
+            status.effective_tool_ceiling,
+            status.effective_tool_root,
+            expected_did,
+            Some(authority.tool_ceiling),
+            expected_root
+        );
     }
     Ok(())
 }
@@ -540,11 +596,17 @@ fn build_native_service<R: Runtime>(
     if install_runtime {
         executable.install()?;
     }
-    let config = gents_server::native_service::NativeServiceConfig::new(
+    let mut config = gents_server::native_service::NativeServiceConfig::new(
         home,
         executable.service_path().to_path_buf(),
     )
     .map_err(native_error)?;
+    // Login Items shows the code-signing personal name unless the agent
+    // names the desktop bundle that installed it.
+    let bundle_id = app.config().identifier.clone();
+    if !bundle_id.trim().is_empty() {
+        config.associated_bundle_id = Some(bundle_id);
+    }
     gents_server::native_service::NativeServiceManager::new(config).map_err(native_error)
 }
 
@@ -759,7 +821,8 @@ async fn matching_external_server(
     let live_did = payload
         .get("agent_did")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     // A process on the default port is only *our* managed server when this
     // home is already initialized as that identity. A fresh first-run home
     // must not adopt a neighbor's `gents server` and then fail reading
@@ -768,10 +831,14 @@ async fn matching_external_server(
         return Ok(None);
     }
     let initialized_did = read_initialized_did(agent_home).await;
-    if ensure_matching_identity(initialized_did.as_deref(), live_did, config.http_port).is_err() {
+    if ensure_matching_identity(initialized_did.as_deref(), &live_did, config.http_port).is_err() {
         return Ok(None);
     }
-    Ok(Some(ManagedServerStatus {
+    Ok(Some(managed_status_from_payload(payload, &live_did)))
+}
+
+fn managed_status_from_payload(payload: serde_json::Value, live_did: &str) -> ManagedServerStatus {
+    ManagedServerStatus {
         state: ManagedServerState::External,
         auto_start: false,
         agent_name: payload
@@ -795,7 +862,7 @@ async fn matching_external_server(
         suggested_tool_root: suggested_tool_root(),
         pairing_ready: false,
         error: None,
-    }))
+    }
 }
 
 async fn default_port_payload(
@@ -1107,8 +1174,8 @@ fn suggested_tool_root() -> Option<String> {
 }
 
 fn parse_tool_ceiling(value: &str) -> Option<ManagedServerToolCeiling> {
-    match value {
-        "meta-only" => Some(ManagedServerToolCeiling::MetaOnly),
+    match value.trim().to_ascii_lowercase().as_str() {
+        "meta-only" | "metaonly" | "meta_only" => Some(ManagedServerToolCeiling::MetaOnly),
         "readonly" => Some(ManagedServerToolCeiling::Readonly),
         "readwrite" => Some(ManagedServerToolCeiling::Readwrite),
         _ => None,
@@ -1439,6 +1506,63 @@ mod tests {
         );
         assert!(combined.contains("readiness failed"));
         assert!(combined.contains("stop failed"));
+    }
+
+    #[test]
+    fn parse_tool_ceiling_accepts_init_json_and_status_spellings() {
+        assert_eq!(
+            parse_tool_ceiling("readwrite"),
+            Some(ManagedServerToolCeiling::Readwrite)
+        );
+        assert_eq!(
+            parse_tool_ceiling("Readwrite"),
+            Some(ManagedServerToolCeiling::Readwrite)
+        );
+        assert_eq!(
+            parse_tool_ceiling("readonly"),
+            Some(ManagedServerToolCeiling::Readonly)
+        );
+        assert_eq!(
+            parse_tool_ceiling("meta-only"),
+            Some(ManagedServerToolCeiling::MetaOnly)
+        );
+        assert_eq!(parse_tool_ceiling("unknown"), None);
+    }
+
+    #[test]
+    fn ready_runtime_requires_live_status_to_carry_reviewed_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("init.json"),
+            r#"{"agent_did":"did:key:zReady"}"#,
+        )
+        .unwrap();
+        let authority = EffectiveManagedAuthority {
+            tool_ceiling: ManagedServerToolCeiling::Readwrite,
+            tool_root: Some(PathBuf::from("/Users/test")),
+        };
+        let missing_authority = ManagedServerStatus {
+            state: ManagedServerState::Running,
+            auto_start: false,
+            agent_name: Some("Mandrake".into()),
+            agent_did: Some("did:key:zReady".into()),
+            graphql: Some("http://127.0.0.1:9191/api/v0/graphql".into()),
+            effective_tool_ceiling: None,
+            effective_tool_root: None,
+            suggested_tool_root: None,
+            pairing_ready: false,
+            error: None,
+        };
+        let error = validate_ready_runtime(&missing_authority, &authority, temp.path())
+            .expect_err("missing /status authority must fail closed");
+        assert!(error.to_string().contains("live did="));
+
+        let ready = ManagedServerStatus {
+            effective_tool_ceiling: Some(ManagedServerToolCeiling::Readwrite),
+            effective_tool_root: Some("/Users/test".into()),
+            ..missing_authority
+        };
+        validate_ready_runtime(&ready, &authority, temp.path()).unwrap();
     }
 
     #[test]

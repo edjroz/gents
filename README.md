@@ -6,7 +6,15 @@ Gents runs LLM agents on top of [DefraDB](https://github.com/sourcenetwork/defra
 
 ## Get running
 
-Everything local, on a Mac, in a few minutes:
+On an Apple Silicon Mac, the desktop installer is the supported path. Download
+`gents-desktop_*_aarch64.dmg` from the
+[GitHub release](https://github.com/gents-ai/gents/releases/latest), drag
+**Gents** to **Applications**, and launch it. If `~/.gents` already exists from
+`gents init` or a previous desktop, setup continues that agent instead of
+creating a second identity.
+
+The GitHub release also has the CLI archive and, for Linux, `.deb` / AppImage
+desktop installers. Checksums and install notes ship next to those files.
 
 ```bash
 brew install llama.cpp

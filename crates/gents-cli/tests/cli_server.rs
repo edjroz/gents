@@ -509,6 +509,19 @@ async fn server_exposes_prometheus_metrics_endpoint() -> Result<()> {
         Some(graphql.as_str())
     );
     assert!(
+        matches!(
+            status.get("tool_ceiling").and_then(Value::as_str),
+            Some("meta-only" | "readonly" | "readwrite")
+        ),
+        "desktop start reads tool_ceiling from /status: {status}"
+    );
+    assert!(
+        status
+            .as_object()
+            .is_some_and(|map| map.contains_key("tool_root")),
+        "desktop start reads tool_root from /status: {status}"
+    );
+    assert!(
         status
             .get("p2p_listen_addresses")
             .and_then(Value::as_array)

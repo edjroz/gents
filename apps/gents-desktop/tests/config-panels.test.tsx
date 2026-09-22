@@ -115,6 +115,18 @@ function expectFields(labels: string[]) {
 beforeEach(() => vi.clearAllMocks());
 
 describe("configuration panels", () => {
+  it("continues an existing local Gents home instead of creating a new identity", async () => {
+    const { shell } = harness();
+    render(<SetupScreen shell={shell} onDone={vi.fn()} />);
+    expect(
+      screen.getByText("Continue the agent already on this computer."),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Found an existing Gents home for Local Agent/),
+    ).toBeVisible();
+    expect(screen.getByDisplayValue("Local Agent")).toBeVisible();
+  });
+
   it("clears a prior agent sign-in while the next account lookup fails", async () => {
     const { api, shell } = harness();
     api.getInferenceSetupCatalog = vi.fn().mockResolvedValue({

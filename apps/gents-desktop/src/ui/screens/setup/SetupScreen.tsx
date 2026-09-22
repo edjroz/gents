@@ -278,6 +278,21 @@ const stepIcon = (state: LoadingStepState | null) =>
     <span className="size-1.5 rounded-full bg-border" />
   );
 
+export function ceilingFromInit(
+  value?: string | null,
+): ManagedServerAuthorityInput["toolCeiling"] {
+  switch (value?.trim().toLowerCase()) {
+    case "meta-only":
+    case "metaonly":
+    case "meta_only":
+      return "meta-only";
+    case "readonly":
+      return "readonly";
+    default:
+      return "readwrite";
+  }
+}
+
 export function providerSignInState(accounts: ProviderAccountView[]) {
   const next: Partial<Record<ProviderId, string>> = {};
   for (const [providerId, credentialKind] of Object.entries(PROVIDER_CREDENTIAL_KIND)) {
@@ -311,14 +326,21 @@ export function SetupScreen({
     allowLocal ? "local" : "remote",
   );
   const [address, setAddress] = useState("");
-  const [name, setName] = useState("Forge");
+  const existingHome = Boolean(
+    shell.snapshot?.bootstrap.agentHomeExists &&
+    shell.snapshot?.bootstrap.initAgentDid?.trim(),
+  );
+  const [name, setName] = useState(
+    shell.snapshot?.bootstrap.initAgentName?.trim() || "Forge",
+  );
   const [homeRoot, setHomeRoot] = useState<string | null>(
     api.managedServerStatus ? null : (shell.snapshot?.bootstrap.initToolRoot ?? null),
   );
-  const [toolCeiling, setToolCeiling] =
-    useState<ManagedServerAuthorityInput["toolCeiling"]>("readwrite");
+  const [toolCeiling, setToolCeiling] = useState<
+    ManagedServerAuthorityInput["toolCeiling"]
+  >(() => ceilingFromInit(shell.snapshot?.bootstrap.initToolCeiling));
   const [selectedDirectory, setSelectedDirectory] = useState<string | null | undefined>(
-    undefined,
+    shell.snapshot?.bootstrap.initToolRoot ?? undefined,
   );
   const [authorityError, setAuthorityError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -741,7 +763,11 @@ export function SetupScreen({
               selected={where === "local"}
               onSelect={() => setWhere("local")}
               title="Local agent"
-              hint="Create an agent that runs independently in the background."
+              hint={
+                existingHome
+                  ? "Continue the agent already on this computer."
+                  : "Create an agent that runs independently in the background."
+              }
               icon={Server}
             >
               <div className="flex items-end gap-3">
@@ -803,6 +829,16 @@ export function SetupScreen({
               <p className="break-all text-xs text-muted-foreground">
                 Agent data: <span className="font-mono">{root}</span>
               </p>
+              {existingHome ? (
+                <p className="text-xs text-muted-foreground">
+                  Found an existing Gents home
+                  {shell.snapshot?.bootstrap.initAgentName
+                    ? ` for ${shell.snapshot.bootstrap.initAgentName}`
+                    : ""}
+                  . Next keeps that identity, native service, and reviewed host
+                  authority.
+                </p>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 Your operating system manages the agent as a background service. Closing
                 this window or choosing Quit Desktop leaves the agent running; use the
