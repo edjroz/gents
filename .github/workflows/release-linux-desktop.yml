@@ -102,10 +102,9 @@ jobs:
               --notes "Gents release with Linux x86_64 desktop installers." \
               || gh release view "$GITHUB_REF_NAME" >/dev/null
           fi
-          # User-facing installers and checksums. Smoke logs stay on artifacts.
+          # Installers and their checksum. The install note stays in the repo docs.
           gh release upload "$GITHUB_REF_NAME" \
             dist/gents-desktop_*.deb \
             dist/gents-desktop_*.AppImage \
             dist/SHA256SUMS-desktop-linux.txt \
-            dist/INSTALL-linux-desktop.md \
             --clobber

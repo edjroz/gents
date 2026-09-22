@@ -6,6 +6,13 @@ and is what compatibility decisions key on — see `contracts/desktop-bridge.jso
 
 ## Unreleased
 
+### Changed
+
+- GitHub Releases attach the desktop installers and their checksums. CLI
+  archives, install notes, debug symbols, build metrics, and desktop npm
+  packages stay off the release page. The container image takes the Linux
+  CLI from the release workflow's artifacts.
+
 ## 0.18.5 - 2026-09-22
 
 ### Added

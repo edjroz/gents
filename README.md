@@ -13,8 +13,8 @@ On an Apple Silicon Mac, the desktop installer is the supported path. Download
 `gents init` or a previous desktop, setup continues that agent instead of
 creating a second identity.
 
-The GitHub release also has the CLI archive and, for Linux, `.deb` / AppImage
-desktop installers. Checksums and install notes ship next to those files.
+Linux desktops use the `.deb` or AppImage on that same release. Each installer
+has a checksum in `SHA256SUMS-desktop-*.txt`.
 
 ```bash
 brew install llama.cpp
@@ -22,10 +22,8 @@ llama-server -hf google/gemma-4-12B-it-qat-q4_0-gguf   # local inference on :808
 
 # Install the Codex CLI separately and make sure `codex` is on PATH.
 # `gents chat` remains the dependency-free fallback UI.
-
-gh release download --repo gents-ai/gents -p 'gents-aarch64-apple-darwin.tar.gz'
-tar -xzf gents-aarch64-apple-darwin.tar.gz
-sudo install gents-aarch64-apple-darwin/gents /usr/local/bin/gents
+# Build the `gents` binary from this repo when you want the CLI on PATH:
+#   cargo build -p gents-cli --release
 
 gents init      # provision a safe read-only agent under ~/.gents
 gents server    # start the runtime (embedded DefraDB + GraphQL + P2P)

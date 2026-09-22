@@ -661,15 +661,10 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" \
               --verify-tag \
               --title "${GITHUB_REF_NAME}" \
-              --notes "Signed gents macOS release artifact." \
+              --notes "Desktop installers are attached as they finish." \
               || gh release view "${GITHUB_REF_NAME}" >/dev/null
           fi
-          # User-facing CLI only. dSYM and build-metrics stay on the workflow
-          # artifact for support; they are not GitHub Release assets.
-          gh release upload "${GITHUB_REF_NAME}" \
-            "${TARBALL}" \
-            "${CHECKSUM_FILE}" \
-            --clobber
+          echo "CLI archive ${TARBALL} stays on the workflow artifact."
 
       - uses: actions/setup-node@v6
         if: env.SIGNING_ENABLED == 'true'
@@ -702,7 +697,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_ENABLED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/gents-desktop-dist/* --clobber
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP"/gents-desktop-dist/gents-desktop_*.dmg \
+            "$RUNNER_TEMP"/gents-desktop-dist/SHA256SUMS-desktop-macos.txt \
+            --clobber
 
       - name: Restore keychain search list
         if: always()
