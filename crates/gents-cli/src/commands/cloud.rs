@@ -54,13 +54,16 @@ const DEFAULT_REFUSAL: &str = "this sign-in was refused; run `gents cloud login`
 /// A gents cloud workspace token carries no expiry: the pod mints 32
 /// random bytes and honours them until that workspace's token is
 /// rotated, and the poll response has no expiry to read.
-///
-/// vertexia: recorded as "now plus ten years" because
-/// `OAuthCredential.access_token_expires_at` is not optional and there is
-/// no "never" to write. If the cloud starts expiring workspace tokens,
-/// the poll response gains the expiry and this reads it instead of
-/// guessing.
+/// `OAuthCredential.access_token_expires_at` is required, so the row
+/// records now plus ten years. If the cloud starts expiring workspace
+/// tokens, the poll response gains the expiry and this reads it.
 const NO_EXPIRY_HORIZON_DAYS: i64 = 3650;
+
+/// Stored in `refresh_token` because that field is required and a blank
+/// value fails decoding of every credential for the agent. The device
+/// flow has no refresh grant. This is not a token and must not be sent
+/// to a token endpoint.
+const NO_REFRESH_GRANT: &str = "gents-cloud:no-refresh-grant";
 
 pub(crate) async fn dispatch(command: CloudCommand) -> Result<()> {
     match command {
@@ -103,7 +106,11 @@ pub(crate) async fn run_cloud_login(
     opts: &CloudLoginOptions,
 ) -> Result<CloudLoginOutcome> {
     let base = cloud_base_url(&opts.cloud)?;
+    let provider = cloud_provider(&opts.provider)?;
+    // A redirect would forward the device-code body, and later the poll,
+    // off the host the operator named. The 3xx comes back as the response.
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(REQUEST_TIMEOUT)
         .build()
         .context("building HTTP client")?;
@@ -122,7 +129,7 @@ pub(crate) async fn run_cloud_login(
     eprintln!("Signed in as {}", session.email);
     eprintln!("Workspace {} is ready.", session.workspace_id);
 
-    let credential = credential_from_session(agent_did, &opts.provider, &session, Utc::now());
+    let credential = credential_from_session(agent_did, provider, &session, Utc::now());
     let mutation = gents::oauth_credential::oauth_credential_upsert_mutation(&credential);
     let response = access
         .write("cli.cloud_login.credential", &mutation)
@@ -156,13 +163,28 @@ pub(crate) fn cloud_login_result_json(outcome: &CloudLoginOutcome) -> Value {
 
 /// What `POST /auth/device/start` answers: the secret this device polls
 /// with, the short code the person reads out, and the schedule to keep.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceStart {
     device_code: String,
     user_code: String,
     verification_uri: String,
     interval_secs: u64,
     expires_in_secs: u64,
+}
+
+/// Hand-written so no `{:?}` anywhere can print the device code. That
+/// value is what the poll exchanges for the workspace token.
+impl std::fmt::Debug for DeviceStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeviceStart")
+            .field("device_code", &"<redacted>")
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("interval_secs", &self.interval_secs)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
 }
 
 /// What `POST /auth/device/poll` answers once a person has approved.
@@ -309,9 +331,7 @@ fn credential_from_session(
         agent_did: agent_did.to_string(),
         provider: provider.to_string(),
         access_token: session.token.clone(),
-        // The device flow issues no refresh grant: a stale token is
-        // replaced by running `gents cloud login` again.
-        refresh_token: String::new(),
+        refresh_token: NO_REFRESH_GRANT.to_string(),
         id_token: None,
         // The account the cloud verified through Google. The workspace it
         // opens is not stored beside it: the token already names the
@@ -333,8 +353,10 @@ fn no_expiry_horizon(now: DateTime<Utc>) -> DateTime<Utc> {
 
 /// Turns `--cloud` into the base URL of a gents cloud public listener.
 ///
-/// A bare host (`app.dev.gents.xyz`) is HTTPS. An explicit `http://` is
-/// kept, which is what a local pod on `127.0.0.1:9192` needs.
+/// A bare host (`app.dev.gents.xyz`) is HTTPS. `http` is kept only for a
+/// loopback listener, which is what a local pod on `127.0.0.1` needs. A
+/// workspace token has no expiry, so cleartext to any other host would
+/// publish it.
 fn cloud_base_url(cloud: &str) -> Result<reqwest::Url> {
     let cloud = cloud.trim();
     if cloud.is_empty() {
@@ -350,7 +372,50 @@ fn cloud_base_url(cloud: &str) -> Result<reqwest::Url> {
     if url.host_str().is_none() {
         anyhow::bail!("--cloud value {cloud:?} is not a host or a URL");
     }
+    if url.scheme() == "http" && !host_is_loopback(&url) {
+        anyhow::bail!(
+            "--cloud must use https, or http on a loopback host such as http://127.0.0.1:9192"
+        );
+    }
     Ok(url)
+}
+
+fn host_is_loopback(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // `host_str` keeps the brackets around an IPv6 address.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+/// Cloud login writes one non-refreshing workspace token. The provider
+/// names that row. It must not be one of the OAuth providers gents
+/// refreshes, or this write would replace that grant with a token those
+/// clients then try to refresh.
+fn cloud_provider(provider: &str) -> Result<&str> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        anyhow::bail!("--provider must name the gents cloud credential, for example gents-cloud");
+    }
+    if matches!(
+        provider,
+        gents::claude_oauth::CLAUDE_OAUTH_PROVIDER
+            | gents::chatgpt_codex::CHATGPT_CODEX_PROVIDER
+            | gents::xai_grok_oauth::XAI_OAUTH_PROVIDER
+    ) {
+        anyhow::bail!(
+            "--provider {provider} is an OAuth credential gents refreshes; cloud login stores a workspace token under gents-cloud"
+        );
+    }
+    Ok(provider)
 }
 
 /// The URL of one device-auth route on `base`. Mirrors
@@ -378,20 +443,31 @@ fn cloud_said_no(action: &str, status: StatusCode, body: &str) -> anyhow::Error 
 
 /// One sentence for a cloud that did not answer at all.
 ///
-/// `reqwest` reports a transport failure as a chain (send failed -> connect
-/// failed -> refused); this flattens it onto one line so the terminal gets
-/// a sentence with the reason still in it, not a stack of causes.
+/// `reqwest` reports a transport failure as a chain. The outer segment
+/// repeats the URL, which this sentence already names, so the causes are
+/// joined on one line.
 fn unreachable_cloud(url: &str, error: &reqwest::Error) -> anyhow::Error {
-    let mut reasons = vec![error.to_string()];
-    let mut source = std::error::Error::source(error);
-    while let Some(cause) = source {
-        reasons.push(cause.to_string());
-        source = cause.source();
-    }
     anyhow::anyhow!(
         "cannot reach the gents cloud at {url} ({}); check --cloud and that the host is reachable",
-        reasons.join("\n")
+        transport_reasons(error)
     )
+}
+
+fn transport_reasons(error: &reqwest::Error) -> String {
+    let mut reasons = Vec::new();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let text = cause.to_string().replace('\n', "; ");
+        if !text.is_empty() {
+            reasons.push(text);
+        }
+        source = cause.source();
+    }
+    if reasons.is_empty() {
+        error.to_string().replace('\n', "; ")
+    } else {
+        reasons.join("; ")
+    }
 }
 
 /// The server's own message, made safe to print: the first non-empty
@@ -759,7 +835,8 @@ mod tests {
             credential_from_session("did:key:z6MkTest", "gents-cloud", &signed_in(), now);
         assert_eq!(credential.credential_id, "gents-cloud:did:key:z6MkTest");
         assert_eq!(credential.access_token, "workspace-token-SECRET");
-        assert_eq!(credential.refresh_token, "");
+        assert_eq!(credential.refresh_token, NO_REFRESH_GRANT);
+        assert_ne!(credential.refresh_token, credential.access_token);
         assert_eq!(
             credential.account_id.as_deref(),
             Some("theo@source.network")
@@ -795,5 +872,70 @@ mod tests {
     #[test]
     fn debug_on_a_session_redacts_the_token() {
         assert!(!format!("{:?}", signed_in()).contains("SECRET"));
+    }
+
+    #[test]
+    fn debug_on_a_device_start_redacts_the_device_code() {
+        let rendered = format!("{:?}", start_with(5, 600));
+        assert!(!rendered.contains("SECRET"), "{rendered}");
+        assert!(rendered.contains("WDJB-MJHT"), "{rendered}");
+    }
+
+    #[test]
+    fn the_stored_credential_decodes_with_the_agents_other_credentials() {
+        let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp");
+        let credential =
+            credential_from_session("did:key:z6MkTest", "gents-cloud", &signed_in(), now);
+        let response = json!({
+            "data": {
+                "OAuthCredential": [{
+                    "_docID": "doc-1",
+                    "credential_id": credential.credential_id,
+                    "agent_did": credential.agent_did,
+                    "provider": credential.provider,
+                    "access_token": credential.access_token,
+                    "refresh_token": credential.refresh_token,
+                    "id_token": null,
+                    "account_id": credential.account_id,
+                    "chatgpt_plan_type": null,
+                    "is_fedramp": false,
+                    "access_token_expires_at": credential.access_token_expires_at.to_rfc3339(),
+                    "last_refresh": now.to_rfc3339(),
+                    "enabled": true,
+                }]
+            }
+        });
+        let loaded = gents::oauth_credential::oauth_credentials_from_response(&response)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("cloud credential decodes");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].access_token, "workspace-token-SECRET");
+        assert_eq!(loaded[0].refresh_token, NO_REFRESH_GRANT);
+    }
+
+    #[test]
+    fn http_is_only_kept_for_a_loopback_host() {
+        assert!(cloud_base_url("http://127.0.0.1:9192").is_ok());
+        assert!(cloud_base_url("http://localhost:9192").is_ok());
+        assert!(cloud_base_url("http://[::1]:9192").is_ok());
+        assert!(cloud_base_url("https://app.dev.gents.xyz").is_ok());
+        let error = cloud_base_url("http://app.dev.gents.xyz").expect_err("cleartext");
+        assert!(error.to_string().contains("https"), "{error}");
+        assert!(cloud_base_url("http://10.1.2.3:9192").is_err());
+    }
+
+    #[test]
+    fn cloud_login_refuses_to_overwrite_an_oauth_provider_gents_refreshes() {
+        for provider in ["claude-subscription", "chatgpt-codex", "xai-oauth"] {
+            let error = cloud_provider(provider).expect_err(provider);
+            assert!(error.to_string().contains(provider), "{error}");
+        }
+        assert_eq!(cloud_provider("gents-cloud").expect("cloud"), "gents-cloud");
+        assert_eq!(
+            cloud_provider("  gents-cloud  ").expect("trimmed"),
+            "gents-cloud"
+        );
+        assert!(cloud_provider("   ").is_err());
     }
 }
