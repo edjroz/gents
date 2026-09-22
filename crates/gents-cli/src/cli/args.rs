@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::output_format::OutputFormat;
 use crate::{
-    BACKGROUND_AFTER_HELP, CHAT_AFTER_HELP, CLI_AFTER_HELP, CODEX_AFTER_HELP, CONFIG_AFTER_HELP,
-    CONFIG_EXPORT_AFTER_HELP, DIAGNOSE_AFTER_HELP, FLEET_AFTER_HELP, INIT_AFTER_HELP,
-    MCP_AFTER_HELP, P2P_AFTER_HELP, PROVISION_AFTER_HELP, REQUEST_AFTER_HELP, RESET_AFTER_HELP,
-    RESPONSE_AFTER_HELP, SCHEMA_AFTER_HELP, SERVER_AFTER_HELP, SESSION_AFTER_HELP,
-    STATUS_AFTER_HELP, SUBAGENT_AFTER_HELP, SUBAGENT_LIST_AFTER_HELP, TASK_AFTER_HELP,
-    TOOLS_AFTER_HELP, TRACE_AFTER_HELP,
+    BACKGROUND_AFTER_HELP, CHAT_AFTER_HELP, CLI_AFTER_HELP, CLOUD_AFTER_HELP, CODEX_AFTER_HELP,
+    CONFIG_AFTER_HELP, CONFIG_EXPORT_AFTER_HELP, DIAGNOSE_AFTER_HELP, FLEET_AFTER_HELP,
+    INIT_AFTER_HELP, MCP_AFTER_HELP, P2P_AFTER_HELP, PROVISION_AFTER_HELP, REQUEST_AFTER_HELP,
+    RESET_AFTER_HELP, RESPONSE_AFTER_HELP, SCHEMA_AFTER_HELP, SERVER_AFTER_HELP,
+    SESSION_AFTER_HELP, STATUS_AFTER_HELP, SUBAGENT_AFTER_HELP, SUBAGENT_LIST_AFTER_HELP,
+    TASK_AFTER_HELP, TOOLS_AFTER_HELP, TRACE_AFTER_HELP,
 };
 
 use crate::default_backend_max_queue_depth;
@@ -92,6 +92,11 @@ pub(crate) enum Command {
         after_help = "Default: opens the browser and listens on a localhost callback. Use --manual on hosts without a browser: open the printed URL anywhere, then paste the code shown on Anthropic's page."
     )]
     ClaudeLogin(ClaudeLoginArgs),
+    #[command(about = "Sign in to and work with a gents cloud", after_help = CLOUD_AFTER_HELP)]
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommand,
+    },
     #[command(name = "__native-fs-runner", hide = true)]
     NativeFsRunner(NativeFsRunnerArgs),
     #[command(about = "Inspect and control live P2P runtime connectivity", after_help = P2P_AFTER_HELP)]
@@ -756,6 +761,35 @@ pub(crate) struct ClaudeLoginArgs {
     pub(crate) client_id: Option<String>,
     #[arg(long, help = "OAuth token endpoint override for testing")]
     pub(crate) token_url: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CloudCommand {
+    #[command(
+        name = "login",
+        about = "Sign in to a gents cloud and store the workspace token in DefraDB",
+        after_help = CLOUD_AFTER_HELP
+    )]
+    Login(CloudLoginArgs),
+}
+
+#[derive(clap::Args)]
+pub(crate) struct CloudLoginArgs {
+    #[arg(
+        long,
+        env = "GENTS_CLOUD",
+        value_name = "HOST",
+        help = "gents cloud host to sign in to, for example app.dev.gents.xyz"
+    )]
+    pub(crate) cloud: String,
+    #[arg(long, help = "Agent home directory. Defaults to ~/.gents")]
+    pub(crate) home: Option<PathBuf>,
+    #[arg(long, help = "GraphQL endpoint for the target gents node")]
+    pub(crate) graphql: Option<String>,
+    #[arg(long, help = "Agent DID that owns the OAuthCredential document")]
+    pub(crate) agent_did: Option<String>,
+    #[arg(long, default_value = "gents-cloud")]
+    pub(crate) provider: String,
 }
 
 #[derive(clap::Args)]

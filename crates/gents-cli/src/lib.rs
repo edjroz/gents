@@ -239,6 +239,15 @@ Examples:
   gents fleet slots
   gents fleet slots --home /path/to/home
   gents fleet slots --graphql http://127.0.0.1:9191/api/v0/graphql";
+const CLOUD_AFTER_HELP: &str = "\
+Signs in through another device: the cloud prints a short code, you approve it on the
+console page it names, and the workspace token is stored as an OAuthCredential document
+for this agent DID. Google authenticates you on that page; gents never sees a password.
+
+Examples:
+  gents cloud login --cloud app.dev.gents.xyz
+  GENTS_CLOUD=app.dev.gents.xyz gents cloud login
+  gents cloud login --cloud http://127.0.0.1:9192 --home /path/to/home";
 const TASK_AFTER_HELP: &str = "\
 Inspect configured Task documents and create pending AgentRequests with manual trigger lineage.
 For a Task with a durable-goal declaration, --session-id is a stable invocation key;
@@ -407,6 +416,7 @@ async fn async_main() -> Result<()> {
         Command::GrokLogin(args) => commands::grok_login::grok_login(args).await,
         Command::GrokAuthProbe(args) => commands::grok_auth_probe::grok_auth_probe(args).await,
         Command::ClaudeLogin(args) => commands::claude_login::claude_login(args).await,
+        Command::Cloud { command } => commands::cloud::dispatch(command).await,
         Command::P2p { command } => commands::p2p::dispatch(command).await,
         Command::Schema { command } => commands::schema::dispatch(command).await,
         Command::Trace { command } => commands::trace::dispatch(command).await,
