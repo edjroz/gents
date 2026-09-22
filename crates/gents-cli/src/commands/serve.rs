@@ -1131,6 +1131,8 @@ async fn serve_foreground(mut args: ServeArgs) -> Result<()> {
         match bind_grok_shim(GrokShimBindArgs {
             background_executions: background_execution_registry.clone(),
             node: node.clone(),
+            actor: identity::Did::new(identity.did().to_owned())
+                .context("server principal DID is not ACP-addressable")?,
             graphql: graphql_url.clone(),
             behavior_id: args.grok_shim_behavior_id.clone(),
             agent_did: identity.did().to_string(),

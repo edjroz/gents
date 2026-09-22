@@ -42,6 +42,21 @@ impl EnvVarGuard {
         }
         Self { saved, _lock: lock }
     }
+
+    /// Holds `vars` unset for the life of the guard, so a test of what a
+    /// flag does without its environment fallback does not depend on the
+    /// shell that launched the suite.
+    fn cleared(vars: &[&'static str]) -> Self {
+        let lock = env_lock().lock().expect("env lock poisoned");
+        let saved = vars
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect();
+        for name in vars {
+            std::env::remove_var(name);
+        }
+        Self { saved, _lock: lock }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -978,6 +993,54 @@ fn claude_login_parses_oauth_flags_and_rejects_seat_flags() {
             "{removed} must be gone"
         );
     }
+}
+
+#[test]
+fn cloud_login_parses_the_host_and_keeps_room_for_sibling_subcommands() {
+    let _env = EnvVarGuard::cleared(&["GENTS_CLOUD"]);
+    let cli = Cli::try_parse_from([
+        "gents",
+        "cloud",
+        "login",
+        "--cloud",
+        "app.dev.gents.xyz",
+        "--agent-did",
+        "did:key:z6MkTest",
+    ])
+    .expect("parse");
+    let Command::Cloud {
+        command: CloudCommand::Login(args),
+    } = cli.command
+    else {
+        panic!("expected cloud login")
+    };
+    assert_eq!(args.cloud, "app.dev.gents.xyz");
+    assert_eq!(args.agent_did.as_deref(), Some("did:key:z6MkTest"));
+    assert_eq!(args.provider, "gents-cloud");
+
+    assert!(
+        Cli::try_parse_from(["gents", "cloud", "login"]).is_err(),
+        "--cloud has no default host to invent"
+    );
+    assert!(
+        Cli::try_parse_from(["gents", "cloud"]).is_err(),
+        "`cloud` is a group, not a command"
+    );
+}
+
+#[test]
+fn cloud_login_reads_the_host_from_the_environment() {
+    // Deliberately not the host any other test or default uses, so this
+    // passes only when the value really came from the environment.
+    let _env = EnvVarGuard::set(&[("GENTS_CLOUD", "cloud.from.environment.example")]);
+    let cli = Cli::try_parse_from(["gents", "cloud", "login"]).expect("parse");
+    let Command::Cloud {
+        command: CloudCommand::Login(args),
+    } = cli.command
+    else {
+        panic!("expected cloud login")
+    };
+    assert_eq!(args.cloud, "cloud.from.environment.example");
 }
 
 #[test]

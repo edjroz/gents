@@ -56,6 +56,13 @@ impl ConformanceConsumer {
 pub fn registered_conformance_consumers() -> &'static [ConformanceConsumer] {
     &[
         ConformanceConsumer::RustTest {
+            id: "conformance::persona_request::generated_root_admission_cases_drive_production_root_policy",
+            package: "gents",
+            source_path: "crates/gents/tests/conformance/persona_request.rs",
+            module_path: "conformance::persona_request",
+            function: "generated_root_admission_cases_drive_production_root_policy",
+        },
+        ConformanceConsumer::RustTest {
             id: "tool_call_lifecycle::runtime::tests::invocation_correlation_matches_lean",
             package: "gents",
             source_path: "crates/gents/src/tool_call_lifecycle/runtime.rs",

@@ -8,6 +8,7 @@
 mod command;
 mod execution;
 pub use execution::ConfigExecutionReceipt;
+mod graph_preview;
 mod ops;
 mod read;
 #[cfg(test)]
@@ -40,6 +41,7 @@ use gents_protocol::persona::{LocalPersonaRequestRecord, PERSONA_AUTHORITY_LOCAL
 use ops::{decode_merged, guard_selection_keeps_gate, validate_merged_selection, ApplyRequest};
 
 pub const CONFIG_TOOL_NAME: &str = "config";
+pub const PREVIEW_GRAPH_TOOL_NAME: &str = "preview_graph";
 pub const LIST_GRAPHS_TOOL_NAME: &str = "list_graphs";
 pub const RUN_GRAPH_TOOL_NAME: &str = "run_graph";
 pub const GET_GRAPH_RUN_TOOL_NAME: &str = "get_graph_run";
@@ -48,8 +50,9 @@ pub const CANCEL_GRAPH_RUN_TOOL_NAME: &str = "cancel_graph_run";
 
 /// Model-facing names reserved by the runtime. Configuration is one coherent
 /// argv-style surface; graph execution remains a separate operational surface.
-pub const SELF_CONFIG_TOOL_NAMES: [&str; 6] = [
+pub const SELF_CONFIG_TOOL_NAMES: [&str; 7] = [
     CONFIG_TOOL_NAME,
+    PREVIEW_GRAPH_TOOL_NAME,
     LIST_GRAPHS_TOOL_NAME,
     RUN_GRAPH_TOOL_NAME,
     GET_GRAPH_RUN_TOOL_NAME,
@@ -204,11 +207,30 @@ fn protect_working_behavior(mut request: ApplyRequest<'static>) -> ApplyRequest<
     request
 }
 fn tools_request(
-    _core: &SelfConfigCore,
+    core: &SelfConfigCore,
     patch: SelfConfigPatch,
     allow_pack_install: bool,
 ) -> ApplyRequest<'static> {
     let mut request = anchored_request(SelfConfigTarget::Tools, "tools_id", patch);
+    let ceiling_root = core.process_ceiling().root.clone();
+    request.normalize = Box::new(move |txn, _, _, merged| {
+        let ceiling_root = ceiling_root.clone();
+        Box::pin(async move {
+            let policy = crate::tool_surface::load_workspace_root_policy_in_txn(
+                txn,
+                ceiling_root.as_deref(),
+            )
+            .await?;
+            let mut tools = decode_merged::<crate::document_config::Tools>("Tools", merged)?;
+            crate::tool_surface::canonicalize_tools_root(&mut tools, &policy)?;
+            let canonical = serde_json::to_value(tools)?
+                .as_object()
+                .context("canonical Tools document must be an object")?
+                .clone();
+            *merged = canonical;
+            Ok(())
+        })
+    });
     request.validate = Box::new(move |_, _, _, merged| {
         let merged = merged.clone();
         Box::pin(async move {
@@ -1036,10 +1058,16 @@ async fn persona_mutate(
     record.local_signature = identity.sign(&record.signing_payload()).await?;
     record.validate_shape()?;
     let mutation = local_persona_request_mutation(&record);
-    crate::config_client::ConfigAccess::write_local(
+    let actor = ::identity::Did::new(identity.did().to_owned())
+        .context("self-config principal DID is not ACP-addressable")?;
+    crate::config_client::ConfigAccess::transact_local(
         node,
+        Some(actor),
         "self_config.create_persona_request",
-        &mutation,
+        |txn| {
+            let mutation = &mutation;
+            Box::pin(async move { txn.execute_local_response(mutation).await.map(|_| ()) })
+        },
     )
     .await?;
 
@@ -1144,7 +1172,26 @@ async fn persona_mutate(
             &args.system_prompt,
             "system_prompt",
         )?;
-        verify_string("/documents/Tools/host/root", &args.root, "root")?;
+        if args.root.is_present() {
+            let effective_root = effective_config
+                .pointer("/documents/Tools/host/root")
+                .and_then(Value::as_str);
+            match args.root.value() {
+                Some(requested_root) => {
+                    let canonical_requested = crate::tool_surface::resolve_configured_tool_root(
+                        std::path::Path::new(requested_root),
+                    )?;
+                    anyhow::ensure!(
+                        effective_root == Some(canonical_requested.to_string_lossy().as_ref()),
+                        "applied behavior request reported success but root does not match the canonical requested value"
+                    );
+                }
+                None => anyhow::ensure!(
+                    effective_root.is_none(),
+                    "applied behavior request reported success but did not clear root"
+                ),
+            }
+        }
         verify_string(
             "/behavior/inference_profile_id",
             &args.profile_id,
@@ -2071,6 +2118,9 @@ pub fn build_self_config_tools(
 
     let mut tools: Vec<Box<dyn ToolDyn>> = Vec::new();
     if config.enable_graph_tools {
+        tools.push(Box::new(graph_preview::PreviewGraphTool {
+            core: core.clone(),
+        }));
         tools.push(Box::new(ListGraphsTool {
             core: core.clone(),
             node: node.clone(),
@@ -2115,6 +2165,7 @@ pub fn self_config_tool_names(config: &SelfConfigToolConfig) -> Vec<String> {
     let mut names = Vec::new();
     if config.enable_graph_tools {
         names.extend([
+            PREVIEW_GRAPH_TOOL_NAME.to_string(),
             LIST_GRAPHS_TOOL_NAME.to_string(),
             RUN_GRAPH_TOOL_NAME.to_string(),
             GET_GRAPH_RUN_TOOL_NAME.to_string(),
