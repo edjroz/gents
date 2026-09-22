@@ -1,8 +1,7 @@
 # Linux desktop installation
 
-Download the **gents-desktop** asset for x86_64/amd64 from the GitHub release.
-The separate `gents-x86_64-unknown-linux-gnu.tar.gz` is the command-line runtime,
-not the desktop application.
+Download the **gents-desktop** `.deb` or AppImage for x86_64/amd64 from the
+GitHub release. That release does not include a separate command-line archive.
 
 For Debian 12 or a compatible newer Debian/Ubuntu desktop:
 
