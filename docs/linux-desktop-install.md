@@ -29,17 +29,15 @@ AppImage support still depends on host graphics/display facilities. If FUSE is
 unavailable, use `APPIMAGE_EXTRACT_AND_RUN=1 ./gents-desktop_0.18.3_x86_64.AppImage`.
 Checksums are supplied in `SHA256SUMS-desktop-linux.txt`.
 
-An AppImage's temporary mount is suitable for the frontend, not a persistent
-service executable. For a local background agent, prefer the Debian package or
-extract the downloaded AppImage with its `--appimage-extract` option into a
-permanent, user-owned directory before onboarding, then launch the extracted app:
+An AppImage's mount is temporary, so the app copies its runtime to
+`~/.local/share/gents/desktop/runtime/gents`, and the user service runs that
+copy. The copy needs about 130 MB. No extraction step is required, and the
+AppImage can be moved or renamed afterwards.
 
-```sh
-./squashfs-root/AppRun
-```
-
-Keep that extracted directory at its installed location while the service is
-configured. Do not register a service from a temporary AppImage mount.
+Opening a newer AppImage refreshes that copy. When the background agent is
+stopped, the app also updates the installed service definition. An agent that
+is already running keeps its current definition until you restart it from the
+app, which writes the new definition before starting it again.
 
 Choose a local managed agent, review its tool root and authority, then connect an
 inference provider. Local inference must be reachable from your own machine;

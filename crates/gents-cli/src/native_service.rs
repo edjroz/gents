@@ -81,7 +81,11 @@ impl NativeServiceConfig {
             executable,
             user_home,
             service_config_dir,
-            search_path: std::env::var_os("PATH").filter(|value| !value.is_empty()),
+            search_path: forwarded_search_path(
+                std::env::var_os("PATH").as_deref(),
+                std::env::var_os("APPDIR").as_deref().map(Path::new),
+                std::env::var_os("APPIMAGE").as_deref().map(Path::new),
+            ),
         })
     }
 
@@ -93,6 +97,65 @@ impl NativeServiceConfig {
             NativeServicePlatform::Linux => self.service_config_dir.join(SYSTEMD_UNIT),
         }
     }
+}
+
+/// Whether a path lives inside a package mount that exists only while the
+/// application that launched it runs, such as an AppImage's mount. A service
+/// definition outlives that mount, so it must never record one.
+/// [`NativeServiceManager::install`] and the desktop executable classifier
+/// both use this test.
+pub fn inside_temporary_package(
+    path: &Path,
+    app_dir: Option<&Path>,
+    app_image: Option<&Path>,
+) -> bool {
+    // An extracted AppRun also exports APPDIR. Only an active AppImage
+    // launcher (APPIMAGE present) makes that directory temporary.
+    if app_image.is_none() {
+        return false;
+    }
+    app_dir.is_some_and(|root| path.starts_with(root))
+        || path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(".mount_")
+        })
+}
+
+/// The search path a service definition records. Entries inside a temporary
+/// package mount are dropped: an AppImage launcher puts its own mount first,
+/// and that directory is gone once the application exits. Leaving it in a
+/// persistent definition also lets a later process occupy the vacated name in
+/// a shared temporary directory and be found ahead of the real tool.
+fn forwarded_search_path(
+    search_path: Option<&OsStr>,
+    app_dir: Option<&Path>,
+    app_image: Option<&Path>,
+) -> Option<OsString> {
+    let durable: Vec<PathBuf> = std::env::split_paths(search_path?)
+        .filter(|entry| !inside_temporary_package(entry, app_dir, app_image))
+        .collect();
+    std::env::join_paths(durable)
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
+/// Refuses an executable that would disappear with the AppImage mount.
+/// Recording it as `ExecStart` lets a later process recreate the vacated
+/// directory and be launched directly.
+pub fn ensure_durable_service_executable(
+    executable: &Path,
+    app_dir: Option<&Path>,
+    app_image: Option<&Path>,
+) -> Result<()> {
+    if inside_temporary_package(executable, app_dir, app_image) {
+        bail!(
+            "the Gents executable at {} is inside a temporary AppImage mount and cannot be recorded as a service executable. Open the desktop app so it can install a durable runtime, or pass --executable pointing at a .deb or extracted install.",
+            executable.display()
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -237,6 +300,11 @@ impl<R: CommandRunner> NativeServiceManager<R> {
 
     pub fn install(&self) -> Result<()> {
         validate_config(&self.config)?;
+        ensure_durable_service_executable(
+            &self.config.executable,
+            std::env::var_os("APPDIR").as_deref().map(Path::new),
+            std::env::var_os("APPIMAGE").as_deref().map(Path::new),
+        )?;
         let path = self.config.definition_path(self.platform);
         let parent = path
             .parent()
@@ -1031,6 +1099,94 @@ mod tests {
             service_config_dir: root.join("service-config"),
             search_path: Some("/a path/bin:/usr/bin".into()),
         }
+    }
+
+    #[test]
+    fn a_temporary_package_is_recognized_only_under_an_active_launcher() {
+        let mount = Path::new("/tmp/.mount_gents123");
+        let image = Path::new("/home/user/.local/bin/Gents.AppImage");
+        assert!(inside_temporary_package(
+            &mount.join("usr/bin/gents"),
+            Some(mount),
+            Some(image)
+        ));
+        // The mount is recognized by its own name even without APPDIR.
+        assert!(inside_temporary_package(
+            &mount.join("usr/bin/gents"),
+            None,
+            Some(image)
+        ));
+        assert!(!inside_temporary_package(
+            Path::new("/usr/bin/gents"),
+            Some(mount),
+            Some(image)
+        ));
+        // An extracted AppRun exports APPDIR and no APPIMAGE, and a macOS
+        // bundle exports neither. Both are as durable as their install.
+        assert!(!inside_temporary_package(
+            Path::new("/opt/gents/squashfs-root/usr/bin/gents"),
+            Some(Path::new("/opt/gents/squashfs-root")),
+            None
+        ));
+        assert!(!inside_temporary_package(
+            Path::new("/Applications/Gents.app/Contents/MacOS/gents"),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn a_mounted_executable_cannot_be_recorded_as_the_service_runtime() {
+        let mount = Path::new("/tmp/.mount_gents123");
+        let image = Path::new("/home/user/.local/bin/Gents.AppImage");
+        let error = ensure_durable_service_executable(
+            &mount.join("usr/bin/gents"),
+            Some(mount),
+            Some(image),
+        )
+        .expect_err("mount");
+        assert!(error.to_string().contains("temporary AppImage"), "{error}");
+        assert!(ensure_durable_service_executable(
+            Path::new("/usr/bin/gents"),
+            Some(mount),
+            Some(image),
+        )
+        .is_ok());
+        // No active launcher: an extracted tree is as durable as the user left it.
+        assert!(
+            ensure_durable_service_executable(&mount.join("usr/bin/gents"), Some(mount), None,)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_forwarded_search_path_drops_the_package_mount() {
+        let mount = Path::new("/tmp/.mount_gents123");
+        let image = Path::new("/home/user/.local/bin/Gents.AppImage");
+        // An AppImage launcher prepends its own mount to PATH.
+        let launched = OsString::from(
+            "/tmp/.mount_gents123/usr/bin/:/tmp/.mount_gents123/usr/sbin/:/usr/local/bin:/usr/bin",
+        );
+        assert_eq!(
+            forwarded_search_path(Some(&launched), Some(mount), Some(image)),
+            Some(OsString::from("/usr/local/bin:/usr/bin"))
+        );
+        // Without a launcher every entry is kept, byte for byte.
+        assert_eq!(
+            forwarded_search_path(Some(&launched), None, None),
+            Some(launched.clone())
+        );
+        assert_eq!(forwarded_search_path(None, Some(mount), Some(image)), None);
+        // A search path holding nothing durable is recorded as nothing, not
+        // as an empty entry that would search the working directory.
+        assert_eq!(
+            forwarded_search_path(
+                Some(&OsString::from("/tmp/.mount_gents123/usr/bin/")),
+                Some(mount),
+                Some(image)
+            ),
+            None
+        );
     }
 
     #[test]

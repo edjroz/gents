@@ -55,7 +55,8 @@ chmod +x "${images[0]}"
 appimage_path=$(realpath "${images[0]}")
 smoke appimage "$appimage_path"
 
-# Inspect and execute the AppImage-bundled CLI without installing a service.
+# The bundled CLI must run with no AppImage environment, because the user
+# service runs a copy of it that outlives the mount. No service is installed.
 appimage_extract=$(mktemp -d /tmp/gents-appimage-extract.XXXXXX)
 (
   cd "$appimage_extract"
@@ -63,7 +64,7 @@ appimage_extract=$(mktemp -d /tmp/gents-appimage-extract.XXXXXX)
 )
 appimage_cli=$(find "$appimage_extract/squashfs-root" -type f -name gents -perm -u+x -print -quit)
 [[ -n "$appimage_cli" ]]
-"$appimage_cli" version | grep -F "$version"
+env -u APPDIR -u APPIMAGE -u LD_LIBRARY_PATH "$appimage_cli" version | grep -F "$version"
 rm -rf -- "$appimage_extract"
 
 mkdir -p target/desktop-dist
